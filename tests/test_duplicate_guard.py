@@ -1,7 +1,7 @@
 import tempfile,unittest
 from io import BytesIO
 from PIL import Image,ImageDraw,PngImagePlugin
-from duplicate_guard import image_signature,same_portrait,duplicate_reason
+from duplicate_guard import image_signature,same_portrait,duplicate_reason,normalized_definition
 from pool_store import PoolStore
 from test_pool_store import FakeCatalogue
 
@@ -19,6 +19,20 @@ class DuplicateTests(unittest.TestCase):
  def test_light_recompression_is_detected_without_matching_a_different_image(self):
   self.assertTrue(same_portrait(image_signature(portrait()),image_signature(portrait(format='JPEG'))))
   self.assertFalse(same_portrait(image_signature(portrait()),image_signature(portrait(flip=True))))
+ def test_square_thumbnail_matches_full_portrait_in_both_directions(self):
+  from PIL import ImageOps
+  full=portrait();out=BytesIO()
+  with Image.open(BytesIO(full)) as image:ImageOps.fit(image,(72,72),centering=(.5,.5)).save(out,format='JPEG',quality=94)
+  a,b=image_signature(full),image_signature(out.getvalue())
+  self.assertTrue(same_portrait(a,b));self.assertTrue(same_portrait(b,a))
+ def test_distinct_images_with_same_background_are_not_crop_duplicates(self):
+  image=Image.new('RGB',(96,128),'#ddd4cc');draw=ImageDraw.Draw(image);draw.polygon([(10,120),(50,5),(90,120)],fill='#af3040')
+  out=BytesIO();image.save(out,format='PNG');self.assertFalse(same_portrait(image_signature(portrait()),image_signature(out.getvalue())))
+ def test_identical_body_is_not_missed_when_only_one_title_matches_the_internal_name(self):
+  body=('Ren is a thoughtful adult. His parents live near a different coastal workshop. '*12)
+  a={'name':'Ren','prompt':body,'greet':'Ren opens the door.'};b={**a,'name':'Jock Boyfriend'}
+  self.assertIn('相同人设',duplicate_reason(a,b))
+  normalized=normalized_definition(a,['Ren']);self.assertIn('parents',normalized);self.assertIn('different',normalized)
  def test_renamed_definitions_deduplicate_but_short_generic_text_does_not(self):
   a={'source':'https://one.example/a','name':'Alpha','prompt':('Alpha is a patient adult clockmaker with a coastal workshop. '*25),'greet':'Alpha offers a seat.'}
   b={'source':'https://two.example/b','name':'Beta','prompt':a['prompt'].replace('Alpha','Beta'),'greet':'Beta offers a seat.'}

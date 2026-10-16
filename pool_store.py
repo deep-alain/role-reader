@@ -45,7 +45,8 @@ class PoolStore:
   with self.lock:self._save()
  def _visual(self,record):
   asset=record.get('avatarAsset') or {}
-  if asset and not asset.get('visualSignature'):
+  from duplicate_guard import SIGNATURE_VERSION
+  if asset and (asset.get('visualSignature') or {}).get('version',0)<SIGNATURE_VERSION:
    from pool_avatars import avatar_file
    from duplicate_guard import image_signature
    try:asset['visualSignature']=image_signature(avatar_file(self.directory,record)[0])

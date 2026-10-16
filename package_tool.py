@@ -2,7 +2,7 @@ from pathlib import Path
 import zipfile,json
 
 root=Path(__file__).resolve().parent
-output=root.parent/'outputs'/'角色资料读取器_v1.7_开源渠道与人像偏好.zip'
+output=root.parent/'outputs'/'角色资料读取器_v1.7.1_裁切头像与改名去重.zip'
 output.parent.mkdir(exist_ok=True)
 manifest=json.loads((root/'extension'/'manifest.json').read_text(encoding='utf-8'))
 assert manifest['manifest_version']==3
