@@ -1,0 +1,4 @@
+{
+  "builtinSources": ["chub", "botbooru", "charavault"],
+  "adapters": []
+}

@@ -1,0 +1,14 @@
+/data/
+/.test-output/
+/outputs/
+/taste_examples.json
+/config/sources.local.json
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+/probe_*.py
