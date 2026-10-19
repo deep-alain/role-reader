@@ -34,7 +34,9 @@ class PoolStore:
   if self.state.get('cataloguePolicy')!='popularity-v1':
    self.state['cataloguePolicy']='popularity-v1';self.state['pages']={s:1 for s in self.sources};self.state['queues']={s:[] for s in self.sources};self.state['lastHeadCheck']=0
   for source in self.sources:self.state['pages'].setdefault(source,1);self.state['queues'].setdefault(source,[])
-  if self.taste:self.apply_preferences()
+  if self.taste:
+   if self.taste.hydrate_feedback([r for group in ('ready','reserve','history','portraitPending','retired') for r in self.state.get(group,[])]):self.state['lastHeadCheck']=0
+   self.apply_preferences()
   self.dedupe_inventory()
   with self.lock:self._promote();self._save()
  def _save(self):
@@ -85,17 +87,26 @@ class PoolStore:
       if record['source'] not in existing:pending.append(selected);existing.add(record['source'])
      else:self.state['retired'].append({**selected,'retiredReason':reason,'retiredAt':now_iso()})
     self.state[group]=keep
+   keep=[]
+   for record in self.state.get('portraitPending',[]):
+    decision,reason,selected=self.taste.evaluate(record)
+    if decision=='reject':self.state['retired'].append({**selected,'retiredReason':reason,'retiredAt':now_iso()})
+    else:keep.append(normalize_record(selected))
+   self.state['portraitPending']=keep
    self._promote();self._save();self.wake.set()
  def feedback(self,record_id,choice):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
+   old_queries=self.taste.model()['queries'][:]
    record=self.get_record(record_id);self.taste.feedback(record,choice);self.apply_preferences()
+   if old_queries!=self.taste.model()['queries']:self.state['lastHeadCheck']=0;self._save();self.wake.set()
    if choice=='less':
     queue=self.state.get('portraitPending',[])
     for r in queue:
      if r['id']==record_id:self.state['retired'].append({**r,'retiredReason':'已按你的标注排除','retiredAt':now_iso()})
     self.state['portraitPending']=[r for r in queue if r['id']!=record_id];self._save()
-   return {'ok':True,'choice':choice}
+   learned=self.taste.snapshot()['learning']
+   return {'ok':True,'choice':choice,'learning':learned,'effect':'已提高本条及相似题材、画风的优先级；重复点击不重复计票。' if choice=='more' else '已排除本条和同图／相同人设；相似特征累计独立反例后降权，不封禁整个题材。'}
  def review_portrait(self,record_id,digest,style,medium=None):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
@@ -118,18 +129,29 @@ class PoolStore:
    else:self.state['portraitPending'].append(selected)
    self._save();self.wake.set();return {'ok':True,'decision':decision}
  def _promote(self):
-  while len(self.state['ready'])<self.target and self.state['reserve']:self.state['ready'].append(self._replacement())
+  while len(self.state['ready'])<self.target and self.state['reserve']:
+   replacement=self._replacement()
+   if replacement is None:break
+   self.state['ready'].append(replacement)
  def _replacement(self):
   reserve=self.state['reserve']
-  if self.taste and self.taste.state.get('targetRealisticPercent',0):
-   want=sum(self.taste.is_realistic(r) for r in self.state['ready'])<self.taste.realistic_target(self.target)
-   index=next((i for i,r in enumerate(reserve) if self.taste.is_realistic(r)==want),None)
-   if index is not None:return reserve.pop(index)
-   for i,r in enumerate(self.state.get('portraitPending',[])):
-    if self.taste.is_realistic(r)!=want:continue
+  if not self.taste:return reserve.pop(0) if reserve else None
+  candidates=[]
+  for group in ('reserve','portraitPending'):
+   for i,r in enumerate(self.state[group]):
     decision,_,selected=self.taste.evaluate(r)
-    if decision=='accept':self.state['portraitPending'].pop(i);selected['addedAt']=now_iso();return normalize_record(selected)
-  return reserve.pop(0) if reserve else None
+    if decision=='accept':candidates.append((group,i,selected))
+  if self.taste.state.get('targetRealisticPercent',0):
+   want=sum(self.taste.is_realistic(r) for r in self.state['ready'])<self.taste.realistic_target(self.target)
+   matching=[entry for entry in candidates if self.taste.is_realistic(entry[2])==want]
+   if matching:candidates=matching
+  if not candidates:return None
+  from selection_rules import rank_records
+  ranked=rank_records([entry[2] for entry in candidates])
+  if not ranked:return None
+  best=ranked[0]
+  group,index,selected=next(entry for entry in candidates if entry[2]['id']==best['id'])
+  self.state[group].pop(index);selected['addedAt']=now_iso();return normalize_record(selected)
  def snapshot(self,include_history=False,include_pending=False):
   with self.lock:
    out={'revision':self.state['revision'],'profile':PROFILE_LABEL,'target':self.target,'reserveTarget':self.reserve_target,'readyCount':len(self.state['ready']),'reserveCount':len(self.state['reserve']),'usedCount':len(self.state['history']),'ready':self.state['ready'],'history':self.state['history'] if include_history else [],'busy':self.busy,'status':self.state['status'],'lastAddedAt':self.state['lastAddedAt'],'sourceErrors':self.source_failures}
@@ -263,7 +285,7 @@ class PoolStore:
      if self._available(item):self.pending.add(item['url']);return item
     page=self.state['pages'].get(source,1) or 1
    try:
-    result=self.client.catalogue(source,page,20)
+    result=self._catalogue(source,page,20)
     with self.lock:
      self.state['queues'][source].extend(result['items']);self.state['pages'][source]=result['nextPage'] or 1;self.source_failures.pop(source,None);self._save()
      queue=self.state['queues'][source]
@@ -273,13 +295,25 @@ class PoolStore:
    except Exception as error:
     with self.lock:self.source_failures[source]={'error':str(error)[:300],'retryAfter':time.time()+60}
   return None
+ def _catalogue(self,source,page,limit=20):
+  supports=getattr(self.client,'supports_query_override',False)
+  if callable(supports):supports=supports(source)
+  with self.lock:
+   turn=self.state.get('preferenceQueryTurn',0);self.state['preferenceQueryTurn']=turn+1
+   query=self.taste.discovery_query(turn) if self.taste and supports else None
+   pages=self.state.setdefault('preferenceQueryPages',{});key=source+'|'+str(query);query_page=pages.get(key,1)
+  if not query:return self.client.catalogue(source,page,limit)
+  result=self.client.catalogue(source,query_page,limit,query=query)
+  with self.lock:pages[key]=result.get('nextPage') or 1
+  return {**result,'nextPage':page,'preferenceQuery':query}
  def refill_batch(self):
   self.last_batch_attempted=0
   promoted=0
   with self.lock:
    if self.taste:
     keep=[]
-    queue=list(self.state.get('portraitPending',[]))
+    from selection_rules import rank_records
+    queue=rank_records([self.taste.evaluate(r)[2] for r in self.state.get('portraitPending',[])])
     for _ in range(len(queue)):
      index=0
      if self.taste.state.get('targetRealisticPercent',0):
@@ -315,7 +349,7 @@ class PoolStore:
   for source in self.sources:
    if self.stop_event.is_set():break
    try:
-    result=self.client.catalogue(source,1,20)
+    result=self._catalogue(source,1,20)
     with self.lock:
      known={v['url'] for v in self.state['queues'][source]};fresh=[v for v in result['items'] if v['url'] not in known and self._available(v)]
      self.state['queues'][source]=fresh+self.state['queues'][source];self.source_failures.pop(source,None)

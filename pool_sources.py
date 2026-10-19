@@ -95,8 +95,11 @@ class PublicCatalogue:
    if node is None:raise ValueError('公开目录未匹配此角色，热度与分级保持未知')
   else:raise ValueError('未知来源')
   return metadata(source,node)
- def catalogue(self,source,page=1,limit=20):
-  query=QUERIES[(page-1+SOURCES.index(source))%len(QUERIES)];cycle=(page-1)//len(QUERIES);query_page=cycle//2+1
+ supports_query_override=True
+ def catalogue(self,source,page=1,limit=20,query=None):
+  if query is not None and query not in QUERIES:raise ValueError('未知的偏好检索词')
+  override=query is not None
+  query=query or QUERIES[(page-1+SOURCES.index(source))%len(QUERIES)];cycle=(page-1)//len(QUERIES);query_page=page if override else cycle//2+1
   sort={'chub':('n_favorites','download_count'),'botbooru':('views','favorites'),'charavault':('most_downloaded','top_rated')}[source][cycle%2]
   if source=='chub':
    url='https://gateway.chub.ai/search?'+urllib.parse.urlencode({'search':query,'namespace':'characters','first':limit,'page':query_page,'sort':sort,'asc':'false','nsfw':'false','nsfl':'false','count':'true','include_forks':'true'})

@@ -10,6 +10,7 @@ RULE_TEXT=['排除未成年、学校设定、年龄扮演与 NSFL；年龄未确
  '有真实浏览数时按浏览数排序；未提供浏览数时使用原站消息/互动榜，并单独标注热度依据。',
  '跨站使用本批各来源内部热度顺序，不把消息、点击、收藏或评分换算成浏览数。',
  '同档再按真实点赞/收藏排序；缺失计数保持未知，真实的 0 保留为 0。',
+ '多来／不要按独立角色累计题材、画风与人物特征；同图、同人设不重复计票。单次不要不封禁整个题材；两次独立反例后相似特征降权。偏好分不是热度或匹配概率。',
  '头像未经检查继续遮挡；读取和排序不会消耗库存，点击已使用才换新。']
 
 class RuleStore:
@@ -78,5 +79,6 @@ def rank_records(records,rules=None):
   for i,r in enumerate(group):r['ranking'].update(sourcePosition=i+1,sourceBatchSize=len(group),sourceOrder=1-i/max(1,len(group)-1))
  def key(r):
   stat=r.get('metrics') or r.get('sourceMetrics') or {};ranking=r['ranking']
-  return (ranking['ageStatus']=='verified',r.get('preferencePriority',0),r.get('userPreference')=='more',ranking['heatValue'] is not None,ranking['sourceOrder'],number(stat.get('likes')) if number(stat.get('likes')) is not None else -1,number(stat.get('favorites')) if number(stat.get('favorites')) is not None else -1,ranking['completeFields'])
+  learned=r.get('preferenceLearning') or {}
+  return (ranking['ageStatus']=='verified',r.get('userPreference')=='more',learned.get('band',0),r.get('preferencePriority',0),learned.get('score',0),ranking['heatValue'] is not None,ranking['sourceOrder'],number(stat.get('likes')) if number(stat.get('likes')) is not None else -1,number(stat.get('favorites')) if number(stat.get('favorites')) is not None else -1,ranking['completeFields'])
  return sorted(included,key=key,reverse=True)

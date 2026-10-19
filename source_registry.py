@@ -22,9 +22,10 @@ class SourceRegistry:
    self.adapters[key]=adapter;self.sources.append(key)
   if not self.sources:raise ValueError('至少启用一个来源')
   self.sources=tuple(self.sources)
- def catalogue(self,source,page=1,limit=20):
+ def supports_query_override(self,source):return source in self.sources and source not in self.adapters
+ def catalogue(self,source,page=1,limit=20,query=None):
   if source not in self.sources:raise ValueError('来源未启用')
-  if source not in self.adapters:return self.builtin.catalogue(source,page,limit)
+  if source not in self.adapters:return self.builtin.catalogue(source,page,limit,query=query)
   result=self.adapters[source].catalogue(page,limit)
   if not isinstance(result,dict) or not isinstance(result.get('items'),list):raise ValueError('适配器目录格式无效')
   return {**result,'items':[{**item,'source':source} for item in result['items']]}
