@@ -10,3 +10,4 @@
 .person .ranking-basis{color:#738079;line-height:1.6}#rankingRules ol{padding-left:23px;line-height:1.9;color:#52665a;font-size:13px}#rankingRules .discovery-controls{margin-top:20px}.pool-secondary{flex-wrap:wrap}
 
 .person .taste-badge{color:#245c46;font-weight:600;line-height:1.5}.avatar-preview select{max-width:230px;margin:8px}.record-actions{flex-wrap:wrap;min-width:180px}
+.field-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.copy-field{padding:4px 9px;font-size:12px;color:var(--green)}

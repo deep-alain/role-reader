@@ -58,7 +58,7 @@ class Handler(SimpleHTTPRequestHandler):
   host=self.headers.get('Host','').split(':')[0]
   if host not in ('127.0.0.1','localhost'):return self.json_reply({'error':'Localhost access only'},403)
   parsed=urllib.parse.urlsplit(self.path)
-  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.7.1','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
+  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.7.2','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
   if parsed.path=='/api/rules':return self.json_reply(self.server.rules.snapshot()) if hasattr(self.server,'rules') else self.json_reply({'error':'规则服务未启动'},503)
   if parsed.path=='/api/pool':
    if not hasattr(self.server,'pool'):return self.json_reply({'error':'库存服务未启动'},503)
@@ -132,7 +132,7 @@ if __name__=='__main__':
   try:
    with urllib.request.urlopen(f'http://127.0.0.1:{args.port}/api/status',timeout=2) as existing:
     status=json.load(existing)
-   if status.get('roleReaderApi') and status.get('version')=='1.7.1':
+   if status.get('roleReaderApi') and status.get('version')=='1.7.2':
     url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader is already running: '+url,flush=True)
     if not args.no_browser:webbrowser.open(url)
     raise SystemExit(0)

@@ -1,12 +1,14 @@
 import {FIELDS,text,extractUrls,safeUrl,newRecord,cardToRecord,pageToRecord,dedupeKey,publicRecord} from './core.js';
 import {readZip,readPngCard,makeXlsx,makeZip} from './zip.js';
 import {API_SOURCES,detectApiSource,apiPermissionUrls,searchApi,readApiCharacter} from './apis.js';
+import {reconcileRows,selectionSafeRefresh} from './table-refresh.js';
 const $=id=>document.getElementById(id),extended=!!globalThis.chrome?.scripting,storageKey='role-reader-v1';
 const sessionPort=extended?chrome.runtime.connect({name:'role-reader-session'}):null;
 if(sessionPort)setInterval(()=>{try{sessionPort.postMessage({type:'keepalive'})}catch{}},20000);
 let records=[],running=false,stopped=false,editId=null,localApi=false,jobController=null,sourceTab=Number(new URLSearchParams(location.search).get('sourceTab'))||null;
 let libraryView='manual',poolAvailable=false,poolState=null,poolPolling=false,editLibrary='manual';
 const consuming=new Set();
+const poolRefreshView=selectionSafeRefresh({document,window,render});
 const displayedRecords=()=>libraryView==='pool'?(poolState?.ready||[]):libraryView==='used'?(poolState?.history||[]):libraryView==='pending'?(poolState?.portraitPending||[]):records;
 const apiFetch=(url,options)=>fetch(localApi?'/api/fetch?url='+encodeURIComponent(url):url,options);
 async function openRules(){
@@ -33,12 +35,12 @@ function render(){
  $('recordsTitle').textContent=libraryView==='pool'?'待用角色库':libraryView==='used'?'已使用记录':libraryView==='pending'?'头像与风格待核验（不计入待用）':'手动读取结果';
  document.querySelector('.input-card').hidden=poolAvailable&&libraryView!=='manual';
  for(const [id,view]of [['viewPool','pool'],['viewUsed','used'],['viewPending','pending'],['viewManual','manual']])$(id).classList.toggle('selected',libraryView===view);
- $('rows').replaceChildren();const query=$('search').value.toLowerCase(),filter=$('filter').value;
+ const query=$('search').value.toLowerCase(),filter=$('filter').value;
  const rating=$('sourceRatingFilter').value,order=$('recordOrder').value;
  const visible=listed.filter(r=>(filter==='all'||r.status===filter)&&(rating==='all'||(r.sourceRating||'unknown')===rating)&&[r.name,r.category,r.source].join(' ').toLowerCase().includes(query));
  if(!['original','rules'].includes(order)){const keys=order==='popular'?['favorites','views','downloads']:[order];visible.sort((a,b)=>{for(const key of keys){const diff=(b.sourceMetrics?.[key]??-1)-(a.sourceMetrics?.[key]??-1);if(diff)return diff}return 0})}
  $('empty').hidden=visible.length>0;$('empty').querySelector('strong').textContent=listed.length?'没有符合筛选条件的角色':libraryView==='pool'?(poolState?.readyCount?'没有符合热度门槛的角色，库存仍保留':'正在自动读取新 bot，请稍候'):'角色资料会显示在这里';
- for(const r of visible){const tr=element('tr'),nameCell=element('td'),person=element('div','person'),icon=element('span','avatar-placeholder',r.name?.slice(0,1)||'?'),nameBox=element('div');
+ reconcileRows($('rows'),visible,{key:r=>r.id,version:r=>JSON.stringify([libraryView,consuming.has(r.id),avatarUrl(r),...['name','category','gender','age','status','missing','error','toneMatches','usedAt','source','method','avatarVisibility','avatarError','sourceMetrics','sourceRating','metricsAt','ranking','preferenceReason','userPreference'].map(key=>r[key])]),create:r=>{const tr=element('tr'),nameCell=element('td'),person=element('div','person'),icon=element('span','avatar-placeholder',r.name?.slice(0,1)||'?'),nameBox=element('div');
  const avatar=avatarUrl(r);if(avatar){const img=element('img','record-avatar');img.src=avatar;img.alt=r.avatarVisibility==='covered'?'头像待检查':r.name+'的来源头像';img.loading='lazy';img.referrerPolicy='no-referrer';img.title='点击查看角色和大图';img.onclick=()=>openEditor(r.id);img.onerror=()=>{const failed=element('span','avatar-placeholder','图片加载失败');failed.title=r.avatarError||'来源头像暂时不可用';img.replaceWith(failed)};person.append(img)}else person.append(icon);
  nameBox.append(element('strong','',r.name||'未读取到名称'),element('small','',libraryView==='used'&&r.usedAt?'已使用 · '+new Date(r.usedAt).toLocaleString('zh-CN'):r.toneMatches?.join(' · ')||r.id.slice(0,8)));person.append(nameBox);nameCell.append(person);tr.append(nameCell);
  const metrics=r.sourceMetrics||{},labels={views:'浏览',favorites:'收藏',downloads:'下载',chats:'聊天',messages:'消息',rating:'评分'};const metricText=Object.entries(labels).filter(([key])=>typeof metrics[key]==='number').map(([key,label])=>label+' '+metrics[key].toLocaleString('zh-CN')).join(' · ');const heat=element('small','source-metrics',metricText||'热度数据未提供');heat.title=(r.metricsAt?'来源数据时间：'+new Date(r.metricsAt).toLocaleString('zh-CN')+'。':'')+'未提供的指标保持未知，收藏不等同点赞。';nameBox.append(heat,element('small','source-rating','原站 '+(r.sourceRating&&r.sourceRating!=='unknown'?r.sourceRating:'分级未知')));if(r.ranking){const basis={views:'浏览',messages:'消息',chats:'聊天',downloads:'下载',favorites:'收藏',likes:'点赞',unknown:'未提供计数'};nameBox.append(element('small','ranking-basis',(r.ranking.ageStatus==='verified'?'成年已确认':'年龄待核验')+' · '+basis[r.ranking.heatBasis]+(r.ranking.heatValue!=null?'排序 · 来源本批第 '+r.ranking.sourcePosition+' / '+r.ranking.sourceBatchSize:'，不当作热门')))}
@@ -46,8 +48,8 @@ function render(){
  for(const key of ['category','gender','age']){const cell=element('td',key==='category'?'category-cell':'',text(r[key])||'—');cell.title=text(r[key]);tr.append(cell)}
  const status=element('td'),pill=element('span','pill '+(r.status==='complete'?'good':r.status==='failed'?'bad':''),r.status==='complete'?'9 / 9 字段':r.status==='failed'?'读取失败':`${9-r.missing.length} / 9 字段`);pill.title=r.error||'缺少：'+r.missing.join('、');status.append(pill);tr.append(status);
  const src=element('td','source');if(safeUrl(r.source)){const a=element('a','',new URL(r.source).hostname);a.href=r.source;a.target='_blank';a.rel='noopener noreferrer';a.title=r.source;src.append(a)}else src.textContent=r.source||r.method;tr.append(src);
- const controls=element('td'),actions=element('div','record-actions'),button=element('button','quiet','查看 / 编辑');button.onclick=()=>openEditor(r.id);actions.append(button);if(libraryView==='pool'){const use=element('button','use-button',consuming.has(r.id)?'正在替换…':'已使用 · 换新');use.disabled=consuming.has(r.id);use.onclick=()=>consumeBot(r.id);actions.append(use);for(const[choice,label]of [['more',r.userPreference==='more'?'多来 ✓':'多来'],['less','不要']]){const feedback=element('button','quiet',label);feedback.onclick=()=>feedbackBot(r.id,choice);actions.append(feedback)}}controls.append(actions);tr.append(controls);$('rows').append(tr);
- }
+ const controls=element('td'),actions=element('div','record-actions'),button=element('button','quiet','查看 / 编辑');button.onclick=()=>openEditor(r.id);actions.append(button);if(libraryView==='pool'){const use=element('button','use-button',consuming.has(r.id)?'正在替换…':'已使用 · 换新');use.disabled=consuming.has(r.id);use.onclick=()=>consumeBot(r.id);actions.append(use);for(const[choice,label]of [['more',r.userPreference==='more'?'多来 ✓':'多来'],['less','不要']]){const feedback=element('button','quiet',label);feedback.onclick=()=>feedbackBot(r.id,choice);actions.append(feedback)}}controls.append(actions);tr.append(controls);return tr;
+ }});
 }
 function applyPool(next){
  if(poolState&&next.revision<poolState.revision)return;
@@ -56,7 +58,7 @@ function applyPool(next){
  $('poolReady').textContent=poolState.readyCount;$('poolReserve').textContent=poolState.reserveCount;$('poolUsed').textContent=poolState.usedCount;
  $('poolStatus').textContent=poolState.status+(poolState.readyCount<50?'；剩余 '+(50-poolState.readyCount)+' 个正在补货':'')+(typeof poolState.matchingCount==='number'&&poolState.matchingCount<poolState.readyCount?'；门槛筛选显示 '+poolState.matchingCount+' / '+poolState.readyCount+' 个，库存保留':'');
  $('poolErrors').textContent=Object.entries(poolState.sourceErrors||{}).map(([source,detail])=>(API_SOURCES[source]?.label||source)+' 暂时不可用：'+detail.error).join('；');
- if(changed)render();
+ if(changed)poolRefreshView.request();
 }
 async function poolRequest(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const value=await response.json();if(!response.ok)throw new Error(value.error||'库存操作失败');return value;}
 async function refreshPool(force=false){if(!poolAvailable||poolPolling&&!force)return;poolPolling=true;try{const params=new URLSearchParams();if(libraryView==='used')params.set('history','1');if(libraryView==='pending')params.set('pending','1');if(!force&&poolState)params.set('since',poolState.revision);const response=await fetch('/api/pool?'+params,{cache:'no-store',signal:AbortSignal.timeout(10000)});const next=await response.json();if(!response.ok)throw new Error(next.error||'库存服务暂时不可用');applyPool(next)}catch(e){$('poolStatus').textContent='库存服务连接中断，已显示上次记录。请保持启动窗口运行；恢复连接后会继续补货。'}finally{poolPolling=false}}
@@ -71,8 +73,10 @@ function openEditor(id){const r=displayedRecords().find(x=>x.id===id);if(!r)retu
  else if(localApi&&r.avatarAsset){const inspect=element('button','quiet','查看来源头像');inspect.type='button';inspect.onclick=()=>{image.src='/api/pool/avatar?id='+encodeURIComponent(r.id)+'&preview=1&v='+r.avatarAsset.sha256;caption.textContent='检查来源图是否符合你的展示要求';inspect.hidden=true;accept.hidden=false;reject.hidden=false};const accept=element('button','','可以展示'),reject=element('button','quiet','隐藏头像');accept.type=reject.type='button';accept.hidden=reject.hidden=true;for(const[button,approved]of [[accept,true],[reject,false]])button.onclick=async()=>{try{await poolRequest('/api/pool/avatar-review',{id:r.id,sha256:r.avatarAsset.sha256,approved});await refreshPool(true);$('editor').close();openEditor(r.id);message(approved?'已切换为来源头像。':'已隐藏该头像。')}catch(e){message(e.message)}};tools.append(inspect,accept,reject)}$('editFields').append(preview)}
  for(const[key,label]of FIELDS){const wrap=element('label','edit-field '+(['scenario','greet','intro','prompt'].includes(key)?'wide':'')),title=element('span','',label);let input;
  if(key==='gender'){input=element('select');for(const value of ['','Non-binary','Male','Female']){const option=element('option','',value||'未公开 / 未识别');option.value=value;input.append(option)}}else input=element(['scenario','greet','intro','prompt'].includes(key)?'textarea':'input');
- input.id='edit-'+key;input.value=r[key]||'';wrap.append(title,input,element('small','',r.fieldSources[key]||'缺失，可手动补充'));$('editFields').append(wrap)}
- $('raw').textContent=JSON.stringify(r.raw,null,2);$('editor').showModal();
+ input.id='edit-'+key;input.value=r[key]||'';
+ if(['scenario','greet','intro','prompt'].includes(key)){const heading=element('span','field-heading'),copy=element('button','quiet copy-field','复制');copy.type='button';copy.setAttribute('aria-label','复制'+label);copy.onclick=async event=>{event.preventDefault();try{await navigator.clipboard.writeText(input.value);copy.textContent='已复制';setTimeout(()=>{copy.textContent='复制'},1500)}catch{input.focus();input.select();message('已选中完整内容，请按 Ctrl+C 复制。')}};heading.append(title,copy);wrap.append(heading)}else wrap.append(title);
+ wrap.append(input,element('small','',r.fieldSources[key]||'缺失，可手动补充'));$('editFields').append(wrap)}
+ const rawDetails=$('raw').closest('details');rawDetails.open=false;$('raw').textContent='';rawDetails.ontoggle=()=>{if(rawDetails.open&&!$('raw').textContent)$('raw').textContent=JSON.stringify(r.raw,null,2)};$('editor').showModal();
 }
 $('saveRecord').onclick=async()=>{if(editLibrary!=='manual'){try{const fields=Object.fromEntries(FIELDS.map(([key])=>[key,$('edit-'+key).value.trim()]));await poolRequest('/api/pool/edit',{id:editId,fields});await refreshPool(true);$('editor').close();message('修改已保存在常备库中。')}catch(e){message('保存失败：'+e.message)}return}const index=records.findIndex(r=>r.id===editId);if(index<0)return;const r=records[index];for(const[key]of FIELDS){const value=$('edit-'+key).value.trim();if(value!==r[key]){r[key]=value;r.fieldSources[key]='手动编辑'}}records[index]=newRecord({...r,error:''});await persist();render();$('editor').close();message('修改已保存，手动编辑字段会在重新读取时保留。')};
 for(const tab of document.querySelectorAll('[data-panel]'))tab.onclick=()=>{for(const b of document.querySelectorAll('[data-panel]')){b.classList.toggle('selected',b===tab);$(b.dataset.panel).hidden=b!==tab}};
