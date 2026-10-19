@@ -32,7 +32,7 @@ function render(){
  $('total').textContent=listed.length;$('sideCount').textContent=poolAvailable?poolState?.readyCount||0:records.length;
  for(const status of ['complete','partial','failed'])$(status).textContent=listed.filter(r=>r.status===status).length;
  $('export').disabled=!listed.length||running;$('clear').disabled=running;$('clear').hidden=libraryView!=='manual';$('start').disabled=running;$('readCurrent').disabled=running||!extended;$('files').disabled=running;$('apiSearch').disabled=running;$('stop').hidden=!running;
- $('recordsTitle').textContent=libraryView==='pool'?'待用角色库':libraryView==='used'?'已使用记录':libraryView==='pending'?'头像与风格待核验（不计入待用）':'手动读取结果';
+ $('recordsTitle').textContent=libraryView==='pool'?'待用角色库':libraryView==='used'?'已使用记录':libraryView==='pending'?'补货候选（含头像待核验，不计入待用）':'手动读取结果';
  document.querySelector('.input-card').hidden=poolAvailable&&libraryView!=='manual';
  for(const [id,view]of [['viewPool','pool'],['viewUsed','used'],['viewPending','pending'],['viewManual','manual']])$(id).classList.toggle('selected',libraryView===view);
  const query=$('search').value.toLowerCase(),filter=$('filter').value;
@@ -54,8 +54,9 @@ function render(){
 function applyPool(next){
  if(poolState&&next.revision<poolState.revision)return;
  const changed=!poolState||next.revision!==poolState.revision||!!next.ready||!!next.history;
- poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='待核验 '+(poolState.portraitPendingCount||0);$('preferenceSummary').textContent=poolState.preferences?poolState.preferences.explanation+' 入库门槛：来源浏览 ≥80，消息 ≥100；已标多来的角色保留。未知热度如实标注。':'';
+ poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);$('preferenceSummary').textContent=poolState.preferences?poolState.preferences.explanation+' 入库门槛：来源浏览 ≥80，消息 ≥100；已标多来的角色保留。未知热度如实标注。':'';
  $('poolReady').textContent=poolState.readyCount;$('poolReserve').textContent=poolState.reserveCount;$('poolUsed').textContent=poolState.usedCount;
+ if(poolState.visualMix?.targetPercent)$('preferenceSummary').textContent+=' 真人／写实目标 '+poolState.visualMix.targetPercent+'%（'+poolState.visualMix.targetCount+' / 50），当前 '+poolState.visualMix.realisticCount+' / '+poolState.readyCount+'，已核验写实候选 '+poolState.visualMix.realisticQueued+'；使用后优先补足，不自动换掉未使用角色。';
  $('poolStatus').textContent=poolState.status+(poolState.readyCount<50?'；剩余 '+(50-poolState.readyCount)+' 个正在补货':'')+(typeof poolState.matchingCount==='number'&&poolState.matchingCount<poolState.readyCount?'；门槛筛选显示 '+poolState.matchingCount+' / '+poolState.readyCount+' 个，库存保留':'');
  $('poolErrors').textContent=Object.entries(poolState.sourceErrors||{}).map(([source,detail])=>(API_SOURCES[source]?.label||source)+' 暂时不可用：'+detail.error).join('；');
  if(changed)poolRefreshView.request();

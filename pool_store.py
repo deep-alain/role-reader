@@ -96,14 +96,14 @@ class PoolStore:
      if r['id']==record_id:self.state['retired'].append({**r,'retiredReason':'已按你的标注排除','retiredAt':now_iso()})
     self.state['portraitPending']=[r for r in queue if r['id']!=record_id];self._save()
    return {'ok':True,'choice':choice}
- def review_portrait(self,record_id,digest,style):
+ def review_portrait(self,record_id,digest,style,medium=None):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
    record=next((copy.deepcopy(r) for r in self.state.get('portraitPending',[]) if r['id']==record_id),None)
    if record is None:raise ValueError('该角色已处理，请刷新')
    asset=record.get('avatarAsset') or {}
    if not digest or digest!=asset.get('sha256'):raise ValueError('头像已更新，请刷新')
-   self.taste.review(record,style);asset['review']='approved';asset['reviewedAt']=now_iso()
+   self.taste.review(record,style,medium);asset['review']='approved';asset['reviewedAt']=now_iso()
    decision,reason,selected=self.taste.evaluate(record)
    queue=self.state.setdefault('portraitPending',[]);self.state['portraitPending']=[r for r in queue if r['id']!=record_id]
    if decision=='accept':
@@ -118,11 +118,23 @@ class PoolStore:
    else:self.state['portraitPending'].append(selected)
    self._save();self.wake.set();return {'ok':True,'decision':decision}
  def _promote(self):
-  while len(self.state['ready'])<self.target and self.state['reserve']:self.state['ready'].append(self.state['reserve'].pop(0))
+  while len(self.state['ready'])<self.target and self.state['reserve']:self.state['ready'].append(self._replacement())
+ def _replacement(self):
+  reserve=self.state['reserve']
+  if self.taste and self.taste.state.get('targetRealisticPercent',0):
+   want=sum(self.taste.is_realistic(r) for r in self.state['ready'])<self.taste.realistic_target(self.target)
+   index=next((i for i,r in enumerate(reserve) if self.taste.is_realistic(r)==want),None)
+   if index is not None:return reserve.pop(index)
+   for i,r in enumerate(self.state.get('portraitPending',[])):
+    if self.taste.is_realistic(r)!=want:continue
+    decision,_,selected=self.taste.evaluate(r)
+    if decision=='accept':self.state['portraitPending'].pop(i);selected['addedAt']=now_iso();return normalize_record(selected)
+  return reserve.pop(0) if reserve else None
  def snapshot(self,include_history=False,include_pending=False):
   with self.lock:
    out={'revision':self.state['revision'],'profile':PROFILE_LABEL,'target':self.target,'reserveTarget':self.reserve_target,'readyCount':len(self.state['ready']),'reserveCount':len(self.state['reserve']),'usedCount':len(self.state['history']),'ready':self.state['ready'],'history':self.state['history'] if include_history else [],'busy':self.busy,'status':self.state['status'],'lastAddedAt':self.state['lastAddedAt'],'sourceErrors':self.source_failures}
    out.update(portraitPendingCount=len(self.state.get('portraitPending',[])),portraitPending=self.state.get('portraitPending',[]) if include_pending else [],preferences=self.taste.snapshot() if self.taste else None)
+   if self.taste:out['visualMix']={'realisticCount':sum(self.taste.is_realistic(r) for r in self.state['ready']),'targetCount':self.taste.realistic_target(self.target),'targetPercent':self.taste.state.get('targetRealisticPercent',0),'realisticQueued':sum(self.taste.is_realistic(r) and (r.get('avatarAsset') or {}).get('review')=='approved' for r in self.state.get('portraitPending',[]))}
    return copy.deepcopy(out)
  def get_record(self,record_id):
   with self.lock:
@@ -136,7 +148,7 @@ class PoolStore:
    index=next((i for i,r in enumerate(self.state['ready']) if r['id']==record_id),None)
    if index is None:raise KeyError('该 bot 不在待用库中，请刷新')
    record=self.state['ready'].pop(index);record['usedAt']=now_iso();self.state['history'].append(record)
-   replacement=self.state['reserve'].pop(0) if self.state['reserve'] else None
+   replacement=self._replacement()
    if replacement:self.state['ready'].insert(index,replacement)
    self.state['status']='正在补足备用库存' if replacement else '正在补足待用库存';self._save();self.wake.set()
    return {'alreadyUsed':False,'usedId':record_id,'replacementId':replacement['id'] if replacement else None}
@@ -267,7 +279,13 @@ class PoolStore:
   with self.lock:
    if self.taste:
     keep=[]
-    for r in self.state.get('portraitPending',[]):
+    queue=list(self.state.get('portraitPending',[]))
+    for _ in range(len(queue)):
+     index=0
+     if self.taste.state.get('targetRealisticPercent',0):
+      want=sum(self.taste.is_realistic(r) for r in self.state['ready']+self.state['reserve'])<self.taste.realistic_target(self.target+self.reserve_target)
+      index=next((i for i,r in enumerate(queue) if self.taste.is_realistic(r)==want),0)
+     r=queue.pop(index)
      decision,_,selected=self.taste.evaluate(r)
      if decision=='accept' and len(self.state['ready'])+len(self.state['reserve'])<self.target+self.reserve_target:
       selected['addedAt']=now_iso();(self.state['ready'] if len(self.state['ready'])<self.target else self.state['reserve']).append(normalize_record(selected));promoted+=1

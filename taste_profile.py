@@ -11,26 +11,39 @@ STYLE_LABELS={'portrait':'人物头像','photo':'真人 / 写实人像','detaile
 
 class TasteProfile:
  def __init__(self,directory,seed=None):
-  self.path=Path(directory)/'taste_profile.json';self.lock=threading.RLock();self.state={'version':1,'feedback':{},'portraits':{}}
+  self.path=Path(directory)/'taste_profile.json';self.lock=threading.RLock();self.state={'version':1,'feedback':{},'portraits':{},'targetRealisticPercent':0}
   if seed and Path(seed).exists():self.state.update(json.loads(Path(seed).read_text(encoding='utf-8')))
   if self.path.exists():
    saved=json.loads(self.path.read_text(encoding='utf-8'))
    for key in ('feedback','portraits'):self.state[key].update(saved.get(key,{}))
+   self.state['targetRealisticPercent']=saved.get('targetRealisticPercent',0)
   self._save()
  def _save(self):
   self.path.parent.mkdir(parents=True,exist_ok=True);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(self.state,ensure_ascii=False,indent=2),encoding='utf-8');os.replace(tmp,self.path)
  def snapshot(self):
-  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'成熟、不露点的人物风格优先；拒绝默认图标、非人像、过淡线稿、Q版卡通。低于来源热度门槛的不入库；热度未知排后，保留未知标记。'}
+  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'targetRealisticPercent':self.state['targetRealisticPercent'],'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'成熟、不露点的人物风格优先；拒绝默认图标、非人像、过淡线稿、Q版卡通。低于来源热度门槛的不入库；热度未知排后，保留未知标记。'}
+ def set_realistic_target(self,percent):
+  if type(percent) is not int or not 0<=percent<=100:raise ValueError('写实目标比例必须是 0 至 100 的整数')
+  with self.lock:self.state['targetRealisticPercent']=percent;self._save()
+ def realistic_target(self,total):
+  with self.lock:return (total*self.state['targetRealisticPercent']+50)//100
+ def is_realistic(self,record):
+  with self.lock:portrait=self.state['portraits'].get((record.get('avatarAsset') or {}).get('sha256'),{})
+  return portrait.get('medium')=='photorealistic' or portrait.get('medium') is None and portrait.get('style')=='photo'
  def feedback(self,record,choice):
   if choice not in ('more','less'):raise ValueError('无效偏好')
   with self.lock:
    self.state['feedback'][record['source']]={'choice':choice,'name':record['name'],'sha256':(record.get('avatarAsset') or {}).get('sha256'),'at':datetime.now(timezone.utc).isoformat()};self._save()
- def review(self,record,style):
+ def review(self,record,style,medium=None):
   if style not in ALLOWED_STYLES|REJECTED_STYLES:raise ValueError('无效头像风格')
   asset=record.get('avatarAsset') or {};digest=asset.get('sha256')
   if not digest or asset.get('source')!=record.get('avatarSource'):raise ValueError('请先取得匹配的来源头像')
+  if medium not in (None,'photorealistic','illustration','rendered'):raise ValueError('无效的人像媒介')
   with self.lock:
-   self.state['portraits'][digest]={'style':style,'at':datetime.now(timezone.utc).isoformat()};self._save()
+   previous=self.state['portraits'].get(digest,{})
+   self.state['portraits'][digest]={'style':style,'at':datetime.now(timezone.utc).isoformat()}
+   if medium or previous.get('medium'):self.state['portraits'][digest]['medium']=medium or previous['medium']
+   self._save()
  def evaluate(self,record):
   r=copy.deepcopy(record);asset=r.get('avatarAsset') or {};digest=asset.get('sha256');source=r.get('source','')
   with self.lock:
@@ -48,5 +61,7 @@ class TasteProfile:
   r['avatarTaste']={**portrait,'sha256':digest,'label':STYLE_LABELS[style]};r['userPreference']=vote.get('choice','')
   r['preferencePriority']=2 if style=='glamour_portrait' else 1 if style in ('photo','rendered_portrait') else 0
   r['preferenceReason']='你标记多来 · '+STYLE_LABELS[style] if vote.get('choice')=='more' else STYLE_LABELS[style]
+  if self.is_realistic(r):r['preferenceReason']+=' · 真人／写实';r['portraitMedium']='photorealistic'
+  else:r['portraitMedium']=portrait.get('medium','unknown')
   if not basis:r['preferenceReason']+=' · 热度未提供'
   return 'accept','符合人像和热度偏好',r

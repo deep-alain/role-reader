@@ -4,7 +4,7 @@ from pool_avatars import display_avatar
 
 PROFILE_ID='adult-story-romance-covered-v1'
 PROFILE_LABEL='成年 · 故事型恋人 · 来源头像'
-QUERIES=('girlfriend','boyfriend','goth','roommate','elf','childhood friend','boyfriend','coworker','demon','model girlfriend','childhood friend','girlfriend')
+QUERIES=('girlfriend','boyfriend','goth','roommate','elf','childhood friend','boyfriend','coworker','demon','model girlfriend','childhood friend','girlfriend','realistic girlfriend','photorealistic','realistic boyfriend')
 THEMES={
  '哥特与冷感反差':r'\bgoth(?:ic)?\b|cold[- ]hearted|哥特|冷感',
  '奇幻人外':r'\belf\b|\belven\b|\bkitsune\b|\bfoxgirl\b|\bdemon\b|\bsuccubus\b|\bandroid\b|精灵|狐娘|狐狸|恶魔|仿生人',
