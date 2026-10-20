@@ -25,7 +25,7 @@ def validate_url(url):
  params=urllib.parse.parse_qs(u.query,keep_blank_values=True)
  if set(params)-QUERY_KEYS:raise ValueError('Unsupported query parameter')
  if 'time_window' in params and (u.hostname!='botbooru.com' or len(params['time_window'])!=1 or params['time_window'][0] not in ('day','week','month','all')):raise ValueError('Invalid time window')
- if u.hostname=='gateway.chub.ai' and (params.get('namespace',['characters'])!=['characters'] or params.get('nsfw',['false'])!=['false'] or params.get('nsfl',['false'])!=['false']):raise ValueError('Only the anonymous public catalogue is supported')
+ if u.hostname=='gateway.chub.ai' and (params.get('namespace',['characters'])!=['characters'] or params.get('nsfw',['false']) not in (['false'],['true']) or params.get('nsfl',['false'])!=['false']):raise ValueError('Only the public character catalogue without NSFL is supported')
  return url
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -59,12 +59,12 @@ class Handler(SimpleHTTPRequestHandler):
   host=self.headers.get('Host','').split(':')[0]
   if host not in ('127.0.0.1','localhost'):return self.json_reply({'error':'Localhost access only'},403)
   parsed=urllib.parse.urlsplit(self.path)
-  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.9.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
+  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.10.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
   if parsed.path=='/api/rules':return self.json_reply(self.server.rules.snapshot()) if hasattr(self.server,'rules') else self.json_reply({'error':'规则服务未启动'},503)
   if parsed.path=='/api/pool':
    if not hasattr(self.server,'pool'):return self.json_reply({'error':'库存服务未启动'},503)
    query=urllib.parse.parse_qs(parsed.query);snapshot=self.pool_snapshot(query.get('history')==['1'],query.get('pending')==['1'])
-   if query.get('since')==[str(snapshot['revision'])]:snapshot.pop('ready');snapshot.pop('history');snapshot.pop('portraitPending',None)
+   if query.get('since')==[str(snapshot['revision'])]:snapshot.pop('ready',None);snapshot.pop('history',None);snapshot.pop('portraitPending',None)
    return self.json_reply(snapshot)
   if parsed.path=='/api/sources':return self.json_reply({'sources':CAPABILITIES,'enabledSources':list(getattr(getattr(self.server,'pool',None),'sources',[])),'selection':'成年故事型角色；原站分级单独展示','nsfwVerifiedSources':['crushon','spicychat'],'priority':'人物偏好优先，同档按来源真实热度排序','adapterConfiguration':'config/sources.json'})
   if parsed.path=='/api/discovery':
@@ -133,21 +133,26 @@ if __name__=='__main__':
   try:
    with urllib.request.urlopen(f'http://127.0.0.1:{args.port}/api/status',timeout=2) as existing:
     status=json.load(existing)
-   if status.get('roleReaderApi') and status.get('version')=='1.9.0':
+   if status.get('roleReaderApi') and status.get('version')=='1.10.0':
     url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader is already running: '+url,flush=True)
     if not args.no_browser:webbrowser.open(url)
     raise SystemExit(0)
   except (OSError,ValueError):pass
   raise SystemExit(f'Unable to start local reader on port {args.port}: {e}')
- server.rules=RuleStore(args.data_dir)
  if not args.no_pool:
   from source_registry import SourceRegistry
   from pool_store import PoolStore
   from taste_profile import TasteProfile
-  server.pool=PoolStore(args.data_dir,SourceRegistry(fetch_public,ROOT/'config/sources.json'),taste=TasteProfile(args.data_dir,ROOT/'taste_examples.json'));server.pool.start()
+  server.pool=PoolStore(args.data_dir,SourceRegistry(fetch_public,ROOT/'config/sources.json'),taste=lambda:TasteProfile(args.data_dir,ROOT/'taste_examples.json'));server.pool.start()
+ else:
+  from directory_lock import DirectoryLock
+  server.data_lock=DirectoryLock(args.data_dir)
+ server.rules=RuleStore(args.data_dir)
  url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader API client: '+url,flush=True)
  if not args.no_browser:webbrowser.open(url)
  try:server.serve_forever()
- except KeyboardInterrupt:
-  if hasattr(server,'pool'):server.pool.close()
+ except KeyboardInterrupt:pass
+ finally:
   server.server_close()
+  if hasattr(server,'pool'):server.pool.close()
+  if hasattr(server,'data_lock'):server.data_lock.close()

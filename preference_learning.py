@@ -39,9 +39,23 @@ def label(feature):
  kind,value=feature.split(':',1)
  return STYLE_NAMES.get(value,value) if kind=='style' else MEDIUM_NAMES.get(value,value) if kind=='medium' else TRAITS.get(value,value) if kind=='trait' else value
 
+def matching_votes(feedback,record):
+ """Resolve the same transitive identity cluster used when learning."""
+ keys=set(identities(record));matched={};changed=True
+ while changed:
+  changed=False
+  for source,vote in feedback.items():
+   vote_keys=set(vote.get('identityKeys') or ['source:'+canonical_url(source)])
+   if vote.get('sha256'):vote_keys.add('image:'+vote['sha256'])
+   if source not in matched and keys.intersection(vote_keys):
+    matched[source]=vote;keys.update(vote_keys);changed=True
+ return matched
+
+def vote_order(vote):return (vote.get('sequence',0),vote.get('at',''))
+
 def build_model(feedback):
  # Connected identities count mirrored cards and repeated clicks as one example.
- rows=sorted(feedback.items(),key=lambda pair:pair[1].get('at',''))
+ rows=sorted(feedback.items(),key=lambda pair:vote_order(pair[1]))
  parent=list(range(len(rows)));owners={}
  def find(i):
   while parent[i]!=i:parent[i]=parent[parent[i]];i=parent[i]

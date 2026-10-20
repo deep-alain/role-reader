@@ -1,15 +1,18 @@
 import {FIELDS,text,extractUrls,safeUrl,newRecord,cardToRecord,pageToRecord,dedupeKey,publicRecord} from './core.js';
 import {readZip,readPngCard,makeXlsx,makeZip} from './zip.js';
 import {API_SOURCES,detectApiSource,apiPermissionUrls,searchApi,readApiCharacter} from './apis.js';
+import {visibleRecords,requestGate} from './list-view.js';
 import {reconcileRows,selectionSafeRefresh} from './table-refresh.js';
 const $=id=>document.getElementById(id),extended=!!globalThis.chrome?.scripting,storageKey='role-reader-v1';
 const sessionPort=extended?chrome.runtime.connect({name:'role-reader-session'}):null;
 if(sessionPort)setInterval(()=>{try{sessionPort.postMessage({type:'keepalive'})}catch{}},20000);
 let records=[],running=false,stopped=false,editId=null,localApi=false,jobController=null,sourceTab=Number(new URLSearchParams(location.search).get('sourceTab'))||null;
 let libraryView='manual',poolAvailable=false,poolState=null,poolPolling=false,editLibrary='manual';
-const consuming=new Set();
+const consuming=new Set(),poolRequests=requestGate(),viewRevisions={};
+let lastFeedback=null;
 const poolRefreshView=selectionSafeRefresh({document,window,render});
 const displayedRecords=()=>libraryView==='pool'?(poolState?.ready||[]):libraryView==='used'?(poolState?.history||[]):libraryView==='pending'?(poolState?.portraitPending||[]):records;
+const currentVisible=()=>visibleRecords(displayedRecords(),{query:$('search').value,filter:$('filter').value,rating:$('sourceRatingFilter').value,order:$('recordOrder').value});
 const apiFetch=(url,options)=>fetch(localApi?'/api/fetch?url='+encodeURIComponent(url):url,options);
 async function openRules(){
  $('rankingRules').showModal();$('ruleStatus').textContent='正在读取已保存的规则…';$('saveRules').disabled=true;
@@ -35,10 +38,8 @@ function render(){
  $('recordsTitle').textContent=libraryView==='pool'?'待用角色库':libraryView==='used'?'已使用记录':libraryView==='pending'?'补货候选（含头像待核验，不计入待用）':'手动读取结果';
  document.querySelector('.input-card').hidden=poolAvailable&&libraryView!=='manual';
  for(const [id,view]of [['viewPool','pool'],['viewUsed','used'],['viewPending','pending'],['viewManual','manual']])$(id).classList.toggle('selected',libraryView===view);
- const query=$('search').value.toLowerCase(),filter=$('filter').value;
- const rating=$('sourceRatingFilter').value,order=$('recordOrder').value;
- const visible=listed.filter(r=>(filter==='all'||r.status===filter)&&(rating==='all'||(r.sourceRating||'unknown')===rating)&&[r.name,r.category,r.source].join(' ').toLowerCase().includes(query));
- if(!['original','rules'].includes(order)){const keys=order==='popular'?['favorites','views','downloads']:[order];visible.sort((a,b)=>{for(const key of keys){const diff=(b.sourceMetrics?.[key]??-1)-(a.sourceMetrics?.[key]??-1);if(diff)return diff}return 0})}
+ const visible=currentVisible();
+ $('export').disabled=!visible.length||running;$('export').textContent='导出当前列表（'+visible.length+'）';
  $('empty').hidden=visible.length>0;$('empty').querySelector('strong').textContent=listed.length?'没有符合筛选条件的角色':libraryView==='pool'?(poolState?.readyCount?'没有符合热度门槛的角色，库存仍保留':'正在自动读取新 bot，请稍候'):'角色资料会显示在这里';
  reconcileRows($('rows'),visible,{key:r=>r.id,version:r=>JSON.stringify([libraryView,consuming.has(r.id),avatarUrl(r),...['name','category','gender','age','status','missing','error','toneMatches','usedAt','source','method','avatarVisibility','avatarError','sourceMetrics','sourceRating','metricsAt','ranking','preferenceReason','userPreference'].map(key=>r[key])]),create:r=>{const tr=element('tr'),nameCell=element('td'),person=element('div','person'),icon=element('span','avatar-placeholder',r.name?.slice(0,1)||'?'),nameBox=element('div');
  const avatar=avatarUrl(r);if(avatar){const img=element('img','record-avatar');img.src=avatar;img.alt=r.avatarVisibility==='covered'?'头像待检查':r.name+'的来源头像';img.loading='lazy';img.referrerPolicy='no-referrer';img.title='点击查看角色和大图';img.onclick=()=>openEditor(r.id);img.onerror=()=>{const failed=element('span','avatar-placeholder','图片加载失败');failed.title=r.avatarError||'来源头像暂时不可用';img.replaceWith(failed)};person.append(img)}else person.append(icon);
@@ -48,25 +49,41 @@ function render(){
  for(const key of ['category','gender','age']){const cell=element('td',key==='category'?'category-cell':'',text(r[key])||'—');cell.title=text(r[key]);tr.append(cell)}
  const status=element('td'),pill=element('span','pill '+(r.status==='complete'?'good':r.status==='failed'?'bad':''),r.status==='complete'?'9 / 9 字段':r.status==='failed'?'读取失败':`${9-r.missing.length} / 9 字段`);pill.title=r.error||'缺少：'+r.missing.join('、');status.append(pill);tr.append(status);
  const src=element('td','source');if(safeUrl(r.source)){const a=element('a','',new URL(r.source).hostname);a.href=r.source;a.target='_blank';a.rel='noopener noreferrer';a.title=r.source;src.append(a)}else src.textContent=r.source||r.method;tr.append(src);
- const controls=element('td'),actions=element('div','record-actions'),button=element('button','quiet','查看 / 编辑');button.onclick=()=>openEditor(r.id);actions.append(button);if(libraryView==='pool'){const use=element('button','use-button',consuming.has(r.id)?'正在替换…':'已使用 · 换新');use.disabled=consuming.has(r.id);use.onclick=()=>consumeBot(r.id);actions.append(use);for(const[choice,label]of [['more',r.userPreference==='more'?'多来 ✓':'多来'],['less','不要']]){const feedback=element('button','quiet',label);feedback.onclick=()=>feedbackBot(r.id,choice);actions.append(feedback)}}controls.append(actions);tr.append(controls);return tr;
+ const controls=element('td'),actions=element('div','record-actions'),button=element('button','quiet','查看 / 编辑');button.onclick=()=>openEditor(r.id);actions.append(button);if(libraryView==='pool'){const use=element('button','use-button',consuming.has(r.id)?'正在替换…':'已使用 · 换新');use.disabled=consuming.has(r.id);use.onclick=()=>consumeBot(r.id);actions.append(use);for(const[choice,label]of [['more',r.userPreference==='more'?'多来 ✓':'多来'],['less','不要'],...(r.userPreference==='more'?[['clear','撤销多来']]:[])]){const feedback=element('button','quiet',label);feedback.onclick=()=>feedbackBot(r.id,choice);actions.append(feedback)}}controls.append(actions);tr.append(controls);return tr;
  }});
 }
-function applyPool(next){
+function applyPool(next,fromPoll=false){
+ if(!fromPoll){poolRequests.invalidate();poolPolling=false;}
  if(poolState&&next.revision<poolState.revision)return;
  const changed=!poolState||next.revision!==poolState.revision||!!next.ready||!!next.history;
  poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);$('preferenceSummary').textContent=poolState.preferences?poolState.preferences.explanation+' 入库门槛：来源浏览 ≥80，消息 ≥100；已标多来的角色保留。未知热度如实标注。':'';
  $('poolReady').textContent=poolState.readyCount;$('poolReserve').textContent=poolState.reserveCount;$('poolUsed').textContent=poolState.usedCount;
  if(poolState.visualMix?.targetPercent)$('preferenceSummary').textContent+=' 真人／写实目标 '+poolState.visualMix.targetPercent+'%（'+poolState.visualMix.targetCount+' / 50），当前 '+poolState.visualMix.realisticCount+' / '+poolState.readyCount+'，已核验写实候选 '+poolState.visualMix.realisticQueued+'；使用后优先补足，不自动换掉未使用角色。';
  if(poolState.preferences?.learning){const learned=poolState.preferences.learning,more=learned.preferredFeatures.slice(0,3).map(v=>v.label).join('、'),less=learned.downrankedFeatures.slice(0,3).map(v=>v.label).join('、');$('preferenceSummary').textContent+=' 已学习 '+learned.uniqueExamples+' 个独立样本。'+(more?'优先：'+more+'。':'')+(less?'减少：'+less+'。':'')}
+ if(poolState.sourceMix){const mix=poolState.sourceMix;$('preferenceSummary').textContent+=' 原站 NSFW 目标 '+mix.targetPercent+'%（'+mix.targetCount+' / '+poolState.target+'），当前 '+mix.nsfwCount+' / '+poolState.readyCount+'；NSFW 候选 '+mix.nsfwPending+'。'+(mix.targetMet?'已达到目标。':'尚未达到目标，优先补入通过核验的 NSFW，现有库存保留。')}
+ lastFeedback=poolState.lastFeedback?.id||null;$('undoFeedback').hidden=!lastFeedback;
  $('poolStatus').textContent=poolState.status+(poolState.readyCount<50?'；剩余 '+(50-poolState.readyCount)+' 个正在补货':'')+(typeof poolState.matchingCount==='number'&&poolState.matchingCount<poolState.readyCount?'；门槛筛选显示 '+poolState.matchingCount+' / '+poolState.readyCount+' 个，库存保留':'');
  $('poolErrors').textContent=Object.entries(poolState.sourceErrors||{}).map(([source,detail])=>(API_SOURCES[source]?.label||source)+' 暂时不可用：'+detail.error).join('；');
  if(changed)poolRefreshView.request();
 }
 async function poolRequest(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const value=await response.json();if(!response.ok)throw new Error(value.error||'库存操作失败');return value;}
-async function refreshPool(force=false){if(!poolAvailable||poolPolling&&!force)return;poolPolling=true;try{const params=new URLSearchParams();if(libraryView==='used')params.set('history','1');if(libraryView==='pending')params.set('pending','1');if(!force&&poolState)params.set('since',poolState.revision);const response=await fetch('/api/pool?'+params,{cache:'no-store',signal:AbortSignal.timeout(10000)});const next=await response.json();if(!response.ok)throw new Error(next.error||'库存服务暂时不可用');applyPool(next)}catch(e){$('poolStatus').textContent='库存服务连接中断，已显示上次记录。请保持启动窗口运行；恢复连接后会继续补货。'}finally{poolPolling=false}}
+async function refreshPool(force=false){
+ if(!poolAvailable||poolPolling&&!force)return;
+ const view=libraryView,token=poolRequests.begin(view);poolPolling=true;
+ try{
+  const params=new URLSearchParams();if(view==='used')params.set('history','1');if(view==='pending')params.set('pending','1');
+  if(!force&&poolState&&viewRevisions[view]===poolState.revision)params.set('since',poolState.revision);
+  const response=await fetch('/api/pool?'+params,{cache:'no-store',signal:AbortSignal.timeout(10000)}),next=await response.json();
+  if(!poolRequests.accept(token,libraryView))return;
+  if(!response.ok)throw new Error(next.error||'库存服务暂时不可用');
+  applyPool(next,true);viewRevisions[view]=next.revision;
+ }catch(e){if(poolRequests.accept(token,libraryView))$('poolStatus').textContent='库存服务连接中断，已显示上次记录。请保持启动窗口运行；恢复连接后会继续补货。'}
+ finally{if(poolRequests.accept(token,libraryView))poolPolling=false}
+}
 async function consumeBot(id){if(consuming.has(id))return;consuming.add(id);render();try{const result=await poolRequest('/api/pool/use',{id});applyPool(result.pool);message(result.alreadyUsed?'此 bot 已归档，没有重复消耗库存。':result.replacementId?'已归档使用记录，新 bot 已补位。':'已归档，正在从接口读取新 bot 补位。')}catch(e){message('标记失败：'+e.message)}finally{consuming.delete(id);render()}}
-async function setLibraryView(view){libraryView=view;$('filter').value='all';$('search').value='';render();if(view!=='manual')await refreshPool(true)}
-async function feedbackBot(id,choice){try{const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);message(result.effect+' 已学习 '+result.learning.uniqueExamples+' 个独立样本；使用次数不变。')}catch(error){message(error.message)}}
+async function setLibraryView(view){poolRequests.invalidate();poolPolling=false;libraryView=view;$('filter').value='all';$('search').value='';render();if(view!=='manual')await refreshPool(true)}
+async function feedbackBot(id,choice){try{const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);lastFeedback=choice==='clear'?null:id;$('undoFeedback').hidden=!lastFeedback;message(result.effect+' 已学习 '+result.learning.uniqueExamples+' 个独立样本；使用次数不变。')}catch(error){message(error.message)}}
+$('undoFeedback').onclick=()=>{if(lastFeedback)feedbackBot(lastFeedback,'clear')};
 $('viewPending').onclick=()=>setLibraryView('pending');$('viewPool').onclick=()=>setLibraryView('pool');$('viewUsed').onclick=()=>setLibraryView('used');$('viewManual').onclick=()=>setLibraryView('manual');
 $('poolRefresh').onclick=async()=>{try{const result=await poolRequest('/api/pool/refresh',{});applyPool(result.pool);message('已开始检查新 bot；现有未使用库存会保留。')}catch(e){message('检查更新失败：'+e.message)}};
 function openEditor(id){const r=displayedRecords().find(x=>x.id===id);if(!r)return;editId=id;editLibrary=libraryView;$('saveRecord').hidden=libraryView==='pending';$('exportOne').hidden=libraryView==='pending';$('provenance').textContent=r.error||`来源：${r.method}。${r.missing.length?'缺少 '+r.missing.join('、')+'。':'九项字段已填写。'} ${r.notes||''}`;$('editFields').replaceChildren();
@@ -76,6 +93,7 @@ function openEditor(id){const r=displayedRecords().find(x=>x.id===id);if(!r)retu
  for(const[key,label]of FIELDS){const wrap=element('label','edit-field '+(['scenario','greet','intro','prompt'].includes(key)?'wide':'')),title=element('span','',label);let input;
  if(key==='gender'){input=element('select');for(const value of ['','Non-binary','Male','Female']){const option=element('option','',value||'未公开 / 未识别');option.value=value;input.append(option)}}else input=element(['scenario','greet','intro','prompt'].includes(key)?'textarea':'input');
  input.id='edit-'+key;input.value=r[key]||'';
+ if(key==='avatar'&&libraryView!=='manual'){input.readOnly=true;input.title='来源头像随完整资料更新；新图片需重新核验'}
  if(['scenario','greet','intro','prompt'].includes(key)){const heading=element('span','field-heading'),copy=element('button','quiet copy-field','复制');copy.type='button';copy.setAttribute('aria-label','复制'+label);copy.onclick=async event=>{event.preventDefault();try{await navigator.clipboard.writeText(input.value);copy.textContent='已复制';setTimeout(()=>{copy.textContent='复制'},1500)}catch{input.focus();input.select();message('已选中完整内容，请按 Ctrl+C 复制。')}};heading.append(title,copy);wrap.append(heading)}else wrap.append(title);
  wrap.append(input,element('small','',r.fieldSources[key]||'缺失，可手动补充'));$('editFields').append(wrap)}
  const rawDetails=$('raw').closest('details');rawDetails.open=false;$('raw').textContent='';rawDetails.ontoggle=()=>{if(rawDetails.open&&!$('raw').textContent)$('raw').textContent=JSON.stringify(r.raw,null,2)};$('editor').showModal();
@@ -132,7 +150,7 @@ async function exportRecords(selected){if(!selected.length)return;const assets=[
  const archive=makeZip([{name:'角色资料.xlsx',data:makeXlsx(headers,rows)},{name:'角色资料.json',data:JSON.stringify(json,null,2)},{name:'失败清单.json',data:JSON.stringify({pages:failures,avatars:avatarErrors},null,2)},{name:'说明.txt',data:readme},...assets]);
  download(archive,'角色资料_'+new Date().toISOString().slice(0,10)+'.zip');message(`已导出 ${selected.length} 条记录、${assets.length} 张头像；导出不消耗库存。${avatarErrors.length?'有 '+avatarErrors.length+' 个头像下载失败，原因已写入失败清单。':''}`);
  }catch(e){message('导出失败：'+e.message)}finally{running=false;render()}};
-$('export').onclick=()=>exportRecords(displayedRecords().map(publicRecord));
+$('export').onclick=()=>exportRecords(currentVisible().map(publicRecord));
 $('exportOne').onclick=()=>{const list=editLibrary==='manual'?records:editLibrary==='used'?poolState?.history||[]:poolState?.ready||[];const record=list.find(r=>r.id===editId);if(record)exportRecords([publicRecord(record)])};
 try{const saved=extended?(await chrome.storage.local.get(storageKey))[storageKey]:JSON.parse(localStorage.getItem(storageKey)||'[]');records=Array.isArray(saved)?saved.map(newRecord):[]}catch(e){message('无法载入历史记录：'+e.message)}
 $('environment').hidden=extended;render();

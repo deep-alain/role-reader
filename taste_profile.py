@@ -3,7 +3,7 @@ import copy,json,os,re,threading
 from pathlib import Path
 from datetime import datetime,timezone
 from source_metrics import number
-from preference_learning import features,identities,build_model,affinity,model_summary
+from preference_learning import features,identities,build_model,affinity,model_summary,matching_votes,vote_order
 
 ALLOWED_STYLES={'portrait','photo','detailed_illustration','rendered_portrait','glamour_portrait'}
 REJECTED_STYLES={'default_icon','no_person','faint_sketch','chibi_cartoon','other_rejected'}
@@ -48,10 +48,14 @@ class TasteProfile:
   with self.lock:portrait=self.state['portraits'].get((record.get('avatarAsset') or {}).get('sha256'),{})
   return portrait.get('medium')=='photorealistic' or portrait.get('medium') is None and portrait.get('style')=='photo'
  def feedback(self,record,choice):
-  if choice not in ('more','less'):raise ValueError('无效偏好')
+  if choice not in ('more','less','clear'):raise ValueError('无效偏好')
   with self.lock:
+   if choice=='clear':
+    for source in matching_votes(self.state['feedback'],record):self.state['feedback'].pop(source,None)
+    self._model=None;self._save();return
    portrait=self.state['portraits'].get((record.get('avatarAsset') or {}).get('sha256'),{})
-   self.state['feedback'][record['source']]={'choice':choice,'name':record['name'],'sha256':(record.get('avatarAsset') or {}).get('sha256'),'at':datetime.now(timezone.utc).isoformat(),'features':features(record,portrait,choice),'identityKeys':identities(record)};self._model=None;self._save()
+   sequence=max((v.get('sequence',0) for v in self.state['feedback'].values()),default=0)+1
+   self.state['feedback'][record['source']]={'choice':choice,'name':record['name'],'sha256':(record.get('avatarAsset') or {}).get('sha256'),'at':datetime.now(timezone.utc).isoformat(),'sequence':sequence,'features':features(record,portrait,choice),'identityKeys':identities(record)};self._model=None;self._save()
  def review(self,record,style,medium=None):
   if style not in ALLOWED_STYLES|REJECTED_STYLES:raise ValueError('无效头像风格')
   asset=record.get('avatarAsset') or {};digest=asset.get('sha256')
@@ -72,10 +76,9 @@ class TasteProfile:
  def evaluate(self,record):
   r=copy.deepcopy(record);asset=r.get('avatarAsset') or {};digest=asset.get('sha256');source=r.get('source','')
   with self.lock:
-   vote=copy.deepcopy(self.state['feedback'].get(source) or {});portrait=copy.deepcopy(self.state['portraits'].get(digest) or {})
-   denied_digests={v.get('sha256') for v in self.state['feedback'].values() if v.get('choice')=='less' and v.get('sha256')}
-   denied_keys={k for v in self.state['feedback'].values() if v.get('choice')=='less' for k in v.get('identityKeys',[])}
-  if vote.get('choice')=='less' or digest and digest in denied_digests or denied_keys.intersection(identities(r)):return 'reject','已按你的标注排除（同源、同图或相同人设）',r
+   matches=matching_votes(self.state['feedback'],r)
+   vote=copy.deepcopy(sorted(matches.values(),key=vote_order)[-1] if matches else {});portrait=copy.deepcopy(self.state['portraits'].get(digest) or {})
+  if vote.get('choice')=='less':return 'reject','已按你的标注排除（同源、同图或相同人设）',r
   tags=' '.join(str(r.get(k) or '') for k in ('name','category')).replace('_',' ')
   if re.search(r'\b(?:fnf|friday night funkin|chibi|funko|pixel art)\b|Q版|像素风',tags,re.I):return 'reject','排除 Q 版、游戏简笔卡通',r
   style=portrait.get('style')

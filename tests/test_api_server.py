@@ -8,6 +8,8 @@ class EndpointValidation(unittest.TestCase):
  def test_rejects_unrelated_or_private_destinations(self):
   for url in ['http://127.0.0.1:1234/a','https://api.chub.ai.evil.example/api/characters/a/b','https://api.chub.ai/account','https://user:secret@botbooru.com/posts/','https://botbooru.com:8443/posts/','https://api.chub.ai/api/characters/a/%2e%2e','https://charavault.net/api/cards?token=secret']:
    with self.assertRaises(ValueError,msg=url):validate_url(url)
- def test_catalogue_is_anonymous_public_only(self):
-  with self.assertRaises(ValueError):validate_url('https://gateway.chub.ai/search?nsfw=true')
+ def test_public_catalogue_accepts_rating_filter_without_nsfl_or_credentials(self):
+  self.assertEqual(validate_url('https://gateway.chub.ai/search?nsfw=true'),'https://gateway.chub.ai/search?nsfw=true')
+  with self.assertRaises(ValueError):validate_url('https://gateway.chub.ai/search?nsfl=true')
+  with self.assertRaises(ValueError):validate_url('https://gateway.chub.ai/search?nsfw=invalid')
 if __name__=='__main__':unittest.main()

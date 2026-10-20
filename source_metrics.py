@@ -32,7 +32,7 @@ def rank_items(items,metric):
  return sorted(items,key=lambda item:((item.get('sourceMetrics') or {}).get(metric) is not None,(item.get('sourceMetrics') or {}).get(metric) or 0),reverse=True)
 
 CAPABILITIES={
- 'chub':{'label':'Chub','catalogue':'https://gateway.chub.ai/search','detail':'https://api.chub.ai/api/characters/{creator}/{slug}?full=true','sorts':['n_favorites','download_count'],'metrics':['favorites','downloads','chats','messages'],'anonymousCatalogue':True,'nsfwAccess':'requires_login','note':'收藏、下载、聊天与消息数；下载不是点赞。返回结果按实际计数再次排序。'},
+ 'chub':{'label':'Chub','catalogue':'https://gateway.chub.ai/search','detail':'https://api.chub.ai/api/characters/{creator}/{slug}?full=true','sorts':['n_favorites','download_count'],'metrics':['favorites','downloads','chats','messages'],'anonymousCatalogue':True,'nsfwAccess':'public_catalogue_verified','note':'公开目录 nsfw=true 已实测返回真实 NSFW 分级；完整定义仍逐条验证。收藏、下载、聊天与消息数；下载不是点赞。返回结果按实际计数再次排序。'},
  'botbooru':{'label':'BotBooru','catalogue':'https://botbooru.com/posts/','detail':'https://botbooru.com/post/{id}','download':'https://botbooru.com/download/png/{id}','sorts':['views','favorites'],'metrics':['views','favorites','downloads'],'anonymousCatalogue':True,'nsfwAccess':'requires_login','note':'浏览与收藏榜使用 time_window=all；收藏不是点赞。'},
  'charavault':{'label':'CharaVault','catalogue':'https://charavault.net/api/cards','download':'https://charavault.net/api/cards/download/{folder}/{file}','sorts':['most_downloaded','top_rated'],'metrics':['rating','ratingCount','comments'],'anonymousCatalogue':True,'nsfwAccess':'requires_login','note':'支持站内下载榜，但本次目录未返回下载计数、浏览数或点赞数。'},
  'janitor':{'label':'JanitorAI','anonymousCatalogue':False,'nsfwAccess':'not_verified','note':'此前访问被浏览器安全策略拦截，未接入或尝试镜像绕行；截图 Mirror 指向站内 /characters 路径。'},

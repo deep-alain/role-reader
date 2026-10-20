@@ -19,9 +19,9 @@ class RankingTests(unittest.TestCase):
  def test_adult_verification_precedes_popularity_and_school_is_blocked(self):
   values=[record('unknown age',age='',views=1000),record('verified adult',views=1),record('minor',age=16,views=5000),{**record('18 but high school',age=18),'scenario':'High school'}]
   self.assertEqual([r['name'] for r in rank_records(values)],['verified adult','unknown age'])
- def test_source_rating_does_not_raise_rank(self):
+ def test_true_nsfw_source_rating_precedes_heat_without_relabeling(self):
   values=[{**record('lower heat',views=1),'sourceRating':'NSFW','sourceLevel':3},{**record('higher heat',views=100),'sourceRating':'SFW'}]
-  self.assertEqual(rank_records(values)[0]['name'],'higher heat')
+  self.assertEqual(rank_records(values)[0]['name'],'lower heat');self.assertEqual(values[1]['sourceRating'],'SFW')
  def test_positive_threshold_requires_an_actual_counter(self):
   values=[record('unknown',messages=1000000),record('below',views=9),record('meets',views=10)]
   self.assertEqual([r['name'] for r in rank_records(values,{'minimumViews':10})],['meets'])

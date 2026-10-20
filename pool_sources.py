@@ -75,7 +75,7 @@ def chub_record(response,source,endpoint):
  r.update(metadata('chub',node));r['raw'].update(apiEndpoint=endpoint,apiResponse=response);return r
 
 class PublicCatalogue:
- def __init__(self,fetcher):self.fetch=fetcher
+ def __init__(self,fetcher,include_nsfw=False):self.fetch=fetcher;self.include_nsfw=include_nsfw
  def read_metadata(self,record):
   source=record.get('catalogueSource') or record.get('metricsSource')
   if source=='chub':
@@ -102,7 +102,7 @@ class PublicCatalogue:
   query=query or QUERIES[(page-1+SOURCES.index(source))%len(QUERIES)];cycle=(page-1)//len(QUERIES);query_page=page if override else cycle//2+1
   sort={'chub':('n_favorites','download_count'),'botbooru':('views','favorites'),'charavault':('most_downloaded','top_rated')}[source][cycle%2]
   if source=='chub':
-   url='https://gateway.chub.ai/search?'+urllib.parse.urlencode({'search':query,'namespace':'characters','first':limit,'page':query_page,'sort':sort,'asc':'false','nsfw':'false','nsfl':'false','count':'true','include_forks':'true'})
+   url='https://gateway.chub.ai/search?'+urllib.parse.urlencode({'search':query,'namespace':'characters','first':limit,'page':query_page,'sort':sort,'asc':'false','nsfw':'true' if self.include_nsfw else 'false','nsfl':'false','count':'true','include_forks':'true'})
    data=json.loads(self.fetch(url)[0]);nodes=data.get('data',{}).get('nodes');total=data.get('data',{}).get('count',0)
    if not isinstance(nodes,list):raise ValueError('Chub catalogue response is invalid')
    items=[{'source':source,'url':'https://chub.ai/characters/'+n['fullPath'],'endpoint':'https://api.chub.ai/api/characters/'+n['fullPath']+'?full=true'} for n in nodes if isinstance(n.get('fullPath'),str) and len(n['fullPath'].split('/'))==2]
@@ -134,5 +134,5 @@ class PublicCatalogue:
    r['raw'].update(apiEndpoint=item['endpoint'],downloadBytes=len(data))
   r['catalogueSource']=item['source']
   for key in ('sourceMetrics','sourceRating','metricsSource','metricsAt','sourceRanking'):
-   if key in item:r[key]=item[key]
+   if key in item and (item['source']!='chub' or key=='sourceRanking'):r[key]=item[key]
   return {'record':r,'image':image,'imageType':'image/png' if image else ''}

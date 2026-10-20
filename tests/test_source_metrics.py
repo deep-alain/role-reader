@@ -29,6 +29,6 @@ class MetricsTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as directory:
    client=FakeCatalogue();client.read_metadata=lambda r:{'sourceMetrics':{'views':123},'sourceRating':'SFW','metricsAt':'2026-10-16T00:00:00+00:00'}
    store=PoolStore(directory,client);store.accept(client.read({'url':'https://example.org/test'}));old=store.snapshot()['ready'][0];store.refresh_metrics();new=store.snapshot()['ready'][0]
-   self.assertEqual(new['sourceMetrics']['views'],123);self.assertEqual(new['prompt'],old['prompt']);self.assertEqual(new['id'],old['id']);self.assertEqual(store.snapshot()['usedCount'],0)
+   self.assertEqual(new['sourceMetrics']['views'],123);self.assertEqual(new['prompt'],old['prompt']);self.assertEqual(new['id'],old['id']);self.assertEqual(store.snapshot()['usedCount'],0);store.close()
 
 if __name__=='__main__':unittest.main()

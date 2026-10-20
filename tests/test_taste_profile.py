@@ -38,8 +38,8 @@ class TasteTests(unittest.TestCase):
   from io import BytesIO
   image=BytesIO();Image.new('RGB',(16,16),'blue').save(image,format='PNG')
   newer=self.candidate('two',messages=200);newer['image']=image.getvalue();self.pool.accept(newer);self.assertEqual(self.pool.snapshot()['portraitPendingCount'],1)
- def test_mature_presentation_precedes_heat_but_nsfw_label_does_not(self):
+ def test_source_nsfw_rating_precedes_heat_and_portrait_preference(self):
   values=[{'name':'hotter count','age':'28','sourceMetrics':{'views':99999},'sourceRating':'NSFW'},{'name':'preferred portrait','age':'28','sourceMetrics':{'views':100},'preferencePriority':2}]
-  self.assertEqual(rank_records(values)[0]['name'],'preferred portrait')
+  self.assertEqual(rank_records(values)[0]['name'],'hotter count')
 
 if __name__=='__main__':unittest.main()

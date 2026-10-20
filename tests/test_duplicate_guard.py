@@ -49,6 +49,6 @@ class DuplicateTests(unittest.TestCase):
    from pool_avatars import cache_avatar
    import hashlib
    r=normalize_record(evaluate(two['record'])[2]);r['id']=hashlib.sha256(r['source'].encode()).hexdigest()[:24];r['avatarAsset']=cache_avatar(folder,r,two['image']);pool.state['ready'].append(r)
-   pool.dedupe_inventory();self.assertEqual(pool.snapshot()['readyCount'],1);self.assertEqual(pool.snapshot()['usedCount'],0);self.assertEqual(pool.snapshot()['ready'][0]['sourceMetrics']['messages'],500);self.assertTrue(pool.state['retired'][-1]['duplicateOf'])
+   pool.dedupe_inventory();self.assertEqual(pool.snapshot()['readyCount'],1);self.assertEqual(pool.snapshot()['usedCount'],0);self.assertEqual(pool.snapshot()['ready'][0]['sourceMetrics']['messages'],500);self.assertTrue(pool.state['retired'][-1]['duplicateOf']);pool.close()
 
 if __name__=='__main__':unittest.main()

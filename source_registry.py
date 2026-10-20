@@ -8,7 +8,11 @@ class SourceRegistry:
   path=Path(config_path);config=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'builtinSources':list(SOURCES),'adapters':[]}
   builtin=config.get('builtinSources',list(SOURCES))
   if not isinstance(builtin,list) or len(set(builtin))!=len(builtin) or any(s not in SOURCES for s in builtin):raise ValueError('builtinSources 必须为已支持来源的不重复列表')
-  self.builtin=PublicCatalogue(fetcher);self.adapters={};self.sources=list(builtin)
+  selection=config.get('selection') or {};self.target_nsfw_percent=selection.get('targetNsfwPercent',80)
+  if type(self.target_nsfw_percent) is not int or not 0<=self.target_nsfw_percent<=100:raise ValueError('targetNsfwPercent 必须为 0 至 100 的整数')
+  include_nsfw=selection.get('includeNsfwCatalogue',True)
+  if type(include_nsfw) is not bool:raise ValueError('includeNsfwCatalogue 必须为布尔值')
+  self.builtin=PublicCatalogue(fetcher,include_nsfw=include_nsfw);self.adapters={};self.sources=list(builtin);self.nsfw_sources=('chub',) if include_nsfw and 'chub' in builtin else ()
   for entry in config.get('adapters',[]):
    if entry.get('enabled',True) is not True:continue
    key=entry.get('id','')

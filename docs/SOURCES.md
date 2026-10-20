@@ -4,6 +4,8 @@
 
 `builtinSources` 可选 `chub`、`botbooru`、`charavault`；删除名字即可关闭该来源。至少保留一个已启用来源（内置或自定义）。关闭来源不会删除已经读取的资料。
 
+`selection.targetNsfwPercent` 默认 80，表示至少希望 40 / 50 为原站真实 NSFW 分级；0 关闭占比目标。`selection.includeNsfwCatalogue` 默认 true，开启 Chub 公开目录的普通 NSFW 筛选，关闭则只读原 SFW 目录。该选项不提供账号或访问权限，不绕过 401 / 403。分级、成年条件、非露骨文本及不露点人像检查分别执行；目录记录不直接当成完整资料。
+
 新增渠道：复制 `adapters/template.py`，实现 `catalogue(page, limit)` 和 `read(item)`。然后把下面配置加入 `adapters` 数组：
 
 ```json
@@ -18,6 +20,8 @@
 目录返回 `{ "items": [{"url": "角色页面", "endpoint": "读取入口"}], "nextPage": 2 }`。末页 `nextPage` 为 `null`。Registry 会填写 `item.source`，其他参数保留给你的适配器。
 
 详情返回 `{"record": record, "image": optional_bytes}`。`record` 可以由 `pool_sources.card_to_record(card, source_url, avatar_url, method)` 创建，包含九项角色字段，以及 `catalogueSource`、`metricsSource`、`sourceMetrics`、`sourceRating`。热度使用 `views`、`messages`、`chats`、`downloads`、`favorites`、`likes` 等独立字段；没有的数据设为 `None`，不要把消息数改名为浏览量。图片字节可通过 `image` 返回，这样自定义图片渠道无需修改内置图片域名白名单。
+
+完整设定定期更新会复用 `record.raw.apiEndpoint` 调用 `read(item)`；适配器应保留这个公开详情入口，并通过 `image` 返回头像字节以检查同 URL 的图片变化。更新失败保留原资料并记录原因，手动字段不会被来源覆盖。
 
 `read_metadata(record)` 可选，用于定期刷新分级与真实热度。返回带 `sourceMetrics`、`sourceRating` 和 `metricsAt` 的字典。未实现则保留上次数据并显示原因。适配器可自行使用标准库网络请求；应使用公开或已经取得授权的入口，遵守来源的访问约束。浏览器通用页面读取仍可使用附带扩展。
 

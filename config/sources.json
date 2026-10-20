@@ -1,4 +1,5 @@
 {
+  "selection": {"targetNsfwPercent": 80, "includeNsfwCatalogue": true},
   "builtinSources": ["chub", "botbooru", "charavault"],
   "adapters": []
 }

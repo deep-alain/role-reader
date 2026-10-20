@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='role-reader-pool-test-') as directory:
    if store.snapshot()['reserveCount']==5:break
    if attempt%5==4:print(json.dumps({'refillBatches':attempt+1,'reserve':store.snapshot()['reserveCount'],'rejectionReasons':dict(client.rejections)},ensure_ascii=False),flush=True)
    if time.monotonic()-refill_started>120:break
-  restored=PoolStore(directory,PublicCatalogue(fetch_public)).snapshot(True)
+  store.close();store=PoolStore(directory,PublicCatalogue(fetch_public));server.pool=store;restored=store.snapshot(True)
   assert restored['readyCount']==50 and restored['reserveCount']==5 and restored['usedCount']==1, {'ready':restored['readyCount'],'reserve':restored['reserveCount'],'sourceErrors':restored['sourceErrors'],'rejections':dict(client.rejections)}
   report.update(httpUseReplacedOne=True,duplicateClickIdempotent=True,exportsDoNotConsume=True,readyAfterUse=50,reserveAfterUse=4,reserveAfterRefill=5,historyPreservedAfterRestart=True,refillBatches=attempt+1,refillSeconds=round(time.monotonic()-refill_started,1),rejectionReasons=dict(client.rejections))
  finally:server.shutdown();server.server_close();store.close()

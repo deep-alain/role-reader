@@ -55,11 +55,11 @@ def cache_avatar(directory,record,data):
  (folder/name).write_bytes(data)
  old=record.get('avatarAsset') or {};reviewed=old.get('sha256')==digest and old.get('source')==record['avatarSource']
  from duplicate_guard import image_signature
- return {'file':name,'mime':mime,'sha256':digest,'source':record['avatarSource'],'bytes':len(data),'review':old.get('review','pending') if reviewed else 'pending','visualSignature':image_signature(data)}
+ return {'file':name,'mime':mime,'sha256':digest,'source':record['avatarSource'],'bytes':len(data),'review':old.get('review','pending') if reviewed else 'pending','displayHidden':old.get('displayHidden',False) if reviewed else False,'visualSignature':image_signature(data)}
 
 def display_avatar(record):
  asset=record.get('avatarAsset') or {}
- if asset.get('review')=='approved' and asset.get('source')==record.get('avatarSource'):
+ if asset.get('review')=='approved' and not asset.get('displayHidden') and asset.get('source')==record.get('avatarSource'):
   record['avatar']=record['avatarSource'];record['avatarVisibility']='source';record['fieldSources']['avatar']='来源真实头像（已检查可展示）'
  return record
 

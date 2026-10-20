@@ -8,13 +8,13 @@ PNG=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m
 class AvatarTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.store=PoolStore(self.temp.name,FakeCatalogue());self.role=self.store.client.read({'url':'https://example.org/avatar-test'})
- def tearDown(self):self.temp.cleanup()
+ def tearDown(self):self.store.close();self.temp.cleanup()
  def test_source_png_is_retained_even_while_covered(self):
   self.role['image']=PNG;self.assertTrue(self.store.accept(self.role));r=self.store.snapshot()['ready'][0]
   self.assertEqual(r['avatarVisibility'],'covered');self.assertEqual(avatar_file(self.temp.name,r),(PNG,'image/png'));self.assertEqual(r['avatarAsset']['review'],'pending')
  def test_reviewed_original_survives_restart_and_can_be_hidden(self):
   self.role['image']=PNG;self.store.accept(self.role);r=self.store.snapshot()['ready'][0];digest=r['avatarAsset']['sha256']
-  self.store.review_avatar(r['id'],digest,True);saved=PoolStore(self.temp.name,FakeCatalogue()).get_record(r['id'])
+  self.store.review_avatar(r['id'],digest,True);self.store.close();self.store=PoolStore(self.temp.name,FakeCatalogue());saved=self.store.get_record(r['id'])
   self.assertEqual(saved['avatarVisibility'],'source');self.assertEqual(saved['avatar'],r['avatarSource']);self.assertEqual(self.store.snapshot()['usedCount'],0)
   hidden=self.store.review_avatar(r['id'],digest,False);self.assertEqual(hidden['avatarVisibility'],'covered')
  def test_changed_image_cannot_reuse_old_approval(self):

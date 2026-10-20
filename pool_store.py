@@ -12,8 +12,13 @@ def fingerprint(record):
 
 class PoolStore:
  def __init__(self,directory,client,target=50,reserve_target=5,taste=None):
+  from directory_lock import DirectoryLock
+  self.writer_lock=DirectoryLock(directory)
+  try:self._initialize(directory,client,target,reserve_target,taste)
+  except BaseException:self.writer_lock.close();raise
+ def _initialize(self,directory,client,target,reserve_target,taste):
   self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True);self.path=self.directory/'pool.json';self.client=client
-  self.target=target;self.reserve_target=reserve_target;self.sources=tuple(getattr(client,"sources",SOURCES));self.taste=taste;self.lock=threading.RLock();self.wake=threading.Event();self.stop_event=threading.Event();self.thread=None;self.busy=False;self.pending=set();self.source_failures={};self.last_batch_attempted=0
+  self.target=target;self.reserve_target=reserve_target;self.sources=tuple(getattr(client,"sources",SOURCES));self.taste=taste() if callable(taste) else taste;self.lock=threading.RLock();self.wake=threading.Event();self.stop_event=threading.Event();self.thread=None;self.busy=False;self.pending=set();self.source_failures={};self.last_batch_attempted=0
   defaults={'version':1,'revision':0,'profile':'','retired':[],'ready':[],'reserve':[],'history':[],'seenKeys':[],'seenContent':[],'pages':{s:1 for s in self.sources},'queues':{s:[] for s in self.sources},'sourceTurn':0,'failures':{},'lastAddedAt':'','lastHeadCheck':0,'status':'等待自动补货'}
   if self.path.exists():
    saved=json.loads(self.path.read_text(encoding='utf-8'))
@@ -31,8 +36,8 @@ class PoolStore:
    self.state[group]=kept
   if self.state.get('profile')!=PROFILE_ID:
    self.state['profile']=PROFILE_ID;self.state['pages']={s:1 for s in self.sources};self.state['queues']={s:[] for s in self.sources};self.state['lastHeadCheck']=0
-  if self.state.get('cataloguePolicy')!='popularity-v1':
-   self.state['cataloguePolicy']='popularity-v1';self.state['pages']={s:1 for s in self.sources};self.state['queues']={s:[] for s in self.sources};self.state['lastHeadCheck']=0
+  if self.state.get('cataloguePolicy')!='public-nsfw-mix-v2':
+   self.state['cataloguePolicy']='public-nsfw-mix-v2';self.state['pages']={s:1 for s in self.sources};self.state['queues']={s:[] for s in self.sources};self.state['preferenceQueryPages']={};self.state['lastHeadCheck']=0
   for source in self.sources:self.state['pages'].setdefault(source,1);self.state['queues'].setdefault(source,[])
   if self.taste:
    if self.taste.hydrate_feedback([r for group in ('ready','reserve','history','portraitPending','retired') for r in self.state.get(group,[])]):self.state['lastHeadCheck']=0
@@ -40,6 +45,7 @@ class PoolStore:
   self.dedupe_inventory()
   with self.lock:self._promote();self._save()
  def _save(self):
+  if self.writer_lock.file is None:raise ValueError('库存已关闭')
   self.state['revision']+=1
   self.state['seenKeys']=sorted(self.seen_keys);self.state['seenContent']=sorted(self.seen_content)
   tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(self.state,ensure_ascii=False,separators=(',',':')),encoding='utf-8');os.replace(tmp,self.path)
@@ -98,7 +104,19 @@ class PoolStore:
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
    old_queries=self.taste.model()['queries'][:]
-   record=self.get_record(record_id);self.taste.feedback(record,choice);self.apply_preferences()
+   record=self.get_record(record_id,include_retired=True);self.taste.feedback(record,choice)
+   if choice in ('more','clear'):
+    from preference_learning import identities
+    keys=set(identities(record));keep=[]
+    for r in self.state['retired']:
+     if r.get('retiredReason','').startswith('已按你的标注排除') and keys.intersection(identities(r)):
+      candidate=copy.deepcopy(r);candidate.pop('retiredReason',None);candidate.pop('retiredAt',None)
+      accepted,_,candidate=evaluate(candidate)
+      if accepted and not self._duplicate(candidate)[0]:self.state.setdefault('portraitPending',[]).append(candidate)
+      else:keep.append(r)
+     else:keep.append(r)
+    self.state['retired']=keep
+   self.apply_preferences()
    if old_queries!=self.taste.model()['queries']:self.state['lastHeadCheck']=0;self._save();self.wake.set()
    if choice=='less':
     queue=self.state.get('portraitPending',[])
@@ -106,7 +124,7 @@ class PoolStore:
      if r['id']==record_id:self.state['retired'].append({**r,'retiredReason':'已按你的标注排除','retiredAt':now_iso()})
     self.state['portraitPending']=[r for r in queue if r['id']!=record_id];self._save()
    learned=self.taste.snapshot()['learning']
-   return {'ok':True,'choice':choice,'learning':learned,'effect':'已提高本条及相似题材、画风的优先级；重复点击不重复计票。' if choice=='more' else '已排除本条和同图／相同人设；相似特征累计独立反例后降权，不封禁整个题材。'}
+   return {'ok':True,'choice':choice,'learning':learned,'effect':'已撤销本条及镜像的偏好；符合规则的角色回到候选，不增加使用次数。' if choice=='clear' else '已提高本条及相似题材、画风的优先级；重复点击不重复计票。' if choice=='more' else '已排除本条和同图／相同人设；相似特征累计独立反例后降权，不封禁整个题材。'}
  def review_portrait(self,record_id,digest,style,medium=None):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
@@ -141,10 +159,8 @@ class PoolStore:
    for i,r in enumerate(self.state[group]):
     decision,_,selected=self.taste.evaluate(r)
     if decision=='accept':candidates.append((group,i,selected))
-  if self.taste.state.get('targetRealisticPercent',0):
-   want=sum(self.taste.is_realistic(r) for r in self.state['ready'])<self.taste.realistic_target(self.target)
-   matching=[entry for entry in candidates if self.taste.is_realistic(entry[2])==want]
-   if matching:candidates=matching
+  preferred=self._mix_candidates([entry[2] for entry in candidates],self.state['ready'],self.target)
+  candidates=[entry for entry in candidates if entry[2] in preferred]
   if not candidates:return None
   from selection_rules import rank_records
   ranked=rank_records([entry[2] for entry in candidates])
@@ -152,15 +168,36 @@ class PoolStore:
   best=ranked[0]
   group,index,selected=next(entry for entry in candidates if entry[2]['id']==best['id'])
   self.state[group].pop(index);selected['addedAt']=now_iso();return normalize_record(selected)
+ def _mix_candidates(self,candidates,stock,total):
+  percent=getattr(self.client,'target_nsfw_percent',80)
+  if sum(r.get('sourceRating')=='NSFW' for r in stock)<(total*percent+50)//100:
+   matching=[r for r in candidates if r.get('sourceRating')=='NSFW']
+   if matching:candidates=matching
+  if self.taste and self.taste.state.get('targetRealisticPercent',0):
+   want=sum(self.taste.is_realistic(r) for r in stock)<self.taste.realistic_target(total)
+   matching=[r for r in candidates if self.taste.is_realistic(r)==want]
+   if matching:candidates=matching
+  return candidates
  def snapshot(self,include_history=False,include_pending=False):
   with self.lock:
    out={'revision':self.state['revision'],'profile':PROFILE_LABEL,'target':self.target,'reserveTarget':self.reserve_target,'readyCount':len(self.state['ready']),'reserveCount':len(self.state['reserve']),'usedCount':len(self.state['history']),'ready':self.state['ready'],'history':self.state['history'] if include_history else [],'busy':self.busy,'status':self.state['status'],'lastAddedAt':self.state['lastAddedAt'],'sourceErrors':self.source_failures}
    out.update(portraitPendingCount=len(self.state.get('portraitPending',[])),portraitPending=self.state.get('portraitPending',[]) if include_pending else [],preferences=self.taste.snapshot() if self.taste else None)
    if self.taste:out['visualMix']={'realisticCount':sum(self.taste.is_realistic(r) for r in self.state['ready']),'targetCount':self.taste.realistic_target(self.target),'targetPercent':self.taste.state.get('targetRealisticPercent',0),'realisticQueued':sum(self.taste.is_realistic(r) and (r.get('avatarAsset') or {}).get('review')=='approved' for r in self.state.get('portraitPending',[]))}
+   percent=getattr(self.client,'target_nsfw_percent',80);count=sum(r.get('sourceRating')=='NSFW' for r in self.state['ready'])
+   out['sourceMix']={'nsfwCount':count,'sfwCount':sum(r.get('sourceRating')=='SFW' for r in self.state['ready']),'targetPercent':percent,'targetCount':(self.target*percent+50)//100,'nsfwPending':sum(r.get('sourceRating')=='NSFW' for r in self.state.get('portraitPending',[])),'targetMet':count>=(self.target*percent+50)//100}
+   out['lastFeedback']=None
+   if self.taste:
+    from preference_learning import vote_order
+    votes=self.taste.state['feedback'];ordered=sorted(votes.items(),key=lambda pair:vote_order(pair[1]));latest=ordered[-1] if ordered else None
+    if latest:
+     record=next((r for g in ('ready','reserve','history','portraitPending','retired') for r in self.state.get(g,[]) if r['source']==latest[0]),None)
+     if record:out['lastFeedback']={'id':record['id'],'name':record['name'],'choice':latest[1]['choice']}
+   if not include_history:out.pop('history',None)
+   if not include_pending:out.pop('portraitPending',None)
    return copy.deepcopy(out)
- def get_record(self,record_id):
+ def get_record(self,record_id,include_retired=False):
   with self.lock:
-   for group in ('ready','reserve','history','portraitPending'):
+   for group in ('ready','reserve','history','portraitPending')+ (('retired',) if include_retired else ()):
     for record in self.state.get(group,[]):
      if record['id']==record_id:return copy.deepcopy(record)
   raise KeyError('未找到该 bot')
@@ -179,10 +216,20 @@ class PoolStore:
    for group in ('ready','history'):
     for index,record in enumerate(self.state[group]):
      if record['id']!=record_id:continue
-     record['fieldSources']=dict(record.get('fieldSources') or {})
+     draft=copy.deepcopy(record);draft['fieldSources']=dict(record.get('fieldSources') or {})
      for key in FIELDS:
-      if key in fields and isinstance(fields[key],str) and fields[key]!=record.get(key):record[key]=fields[key].strip();record['fieldSources'][key]='手动编辑'
-     self.state[group][index]=normalize_record(record);self._save();return copy.deepcopy(self.state[group][index])
+      if key not in fields:continue
+      if not isinstance(fields[key],str):raise ValueError('字段必须是文本')
+      if key=='avatar' and fields[key].strip()!=record.get(key):raise ValueError('更换头像需重新读取来源并核验，不能直接修改已核验头像地址')
+      if fields[key].strip()!=record.get(key):draft[key]=fields[key].strip();draft['fieldSources'][key]='手动编辑'
+     accepted,reason,draft=evaluate(draft)
+     if not accepted:raise ValueError('未保存：'+reason)
+     if self.taste:
+      decision,reason,draft=self.taste.evaluate(draft)
+      if decision!='accept':raise ValueError('未保存：'+reason)
+     old,reason=self._duplicate(draft)
+     if old:raise ValueError('未保存：与已有角色重复（'+reason+'）')
+     self.state[group][index]=normalize_record(draft);self._save();return copy.deepcopy(self.state[group][index])
    raise KeyError('未找到该 bot')
  def refresh(self):
   with self.lock:self.state['lastHeadCheck']=0;self.state['status']='正在检查新 bot 并补足库存';self._save()
@@ -195,7 +242,8 @@ class PoolStore:
      if r['id']!=record_id:continue
      asset=r.get('avatarAsset') or {}
      if not digest or asset.get('sha256')!=digest or asset.get('source')!=r.get('avatarSource'):raise ValueError('头像已更新，请刷新后再确认')
-     asset.update(review='approved' if approved else 'hidden',reviewedAt=now_iso())
+     if approved:asset.update(review='approved',reviewedAt=now_iso())
+     asset['displayHidden']=not approved
      accepted,_,selected=evaluate(r)
      if not accepted:raise ValueError('角色不符合当前选题规则')
      self.state[group][i]=normalize_record(selected);out=copy.deepcopy(self.state[group][i]);self._save()
@@ -233,6 +281,7 @@ class PoolStore:
    if decision!='accept':
     with self.lock:
      if key not in self.seen_keys:
+      if decision=='pending' and len(self.state.get('portraitPending',[]))>=self.target+self.reserve_target:return False
       self.seen_keys.add(key);self.seen_content.add(fp)
       if decision=='pending':record['pendingReason']=reason;self.state.setdefault('portraitPending',[]).append(record)
       else:self.state['retired'].append({**record,'retiredReason':reason,'retiredAt':now_iso()})
@@ -246,7 +295,11 @@ class PoolStore:
    # A shelf slot must contain real character content, never a failed request or empty placeholder.
    if record['error'] or any(not record[k] for k in ('name','avatar','prompt','greet')):
     self.seen_keys.add(key);self._save();return False
-   if len(self.state['ready'])+len(self.state['reserve'])>=self.target+self.reserve_target:return False
+   if len(self.state['ready'])+len(self.state['reserve'])>=self.target+self.reserve_target:
+    if len(self.state.get('portraitPending',[]))<self.target+self.reserve_target:
+     record['id']=hashlib.sha256(key.encode()).hexdigest()[:24];record['pendingReason']='库存已满，已读取的后续候选'
+     self.state.setdefault('portraitPending',[]).append(record);self.seen_keys.add(key);self.seen_content.add(fp);self._save()
+    return False
    record['id']=hashlib.sha256(key.encode()).hexdigest()[:24];record['addedAt']=now_iso()
    if result.get('image') and not record.get('avatarAsset'):
     record['avatarAsset']=cache_avatar(self.directory,record,result['image'])
@@ -275,9 +328,15 @@ class PoolStore:
        else:record['avatarError']=error;record['avatarRetryAfter']=time.time()+300
        self._save();break
  def _next_candidate(self):
-  for _ in self.sources:
+  with self.lock:
+   offset=self.state['sourceTurn']%len(self.sources);self.state['sourceTurn']+=1
+   sources=list(self.sources[offset:]+self.sources[:offset])
+   preferred=[s for s in getattr(self.client,'nsfw_sources',()) if s in sources]
+   want=sum(r.get('sourceRating')=='NSFW' for r in self.state['ready'])<(self.target*getattr(self.client,'target_nsfw_percent',80)+50)//100
+   turn=self.state.get('discoverySourceTurn',0);self.state['discoverySourceTurn']=turn+1
+  if want and preferred and turn%4!=3:sources=preferred+[s for s in sources if s not in preferred]
+  for source in sources:
    with self.lock:
-    source=self.sources[self.state['sourceTurn']%len(self.sources)];self.state['sourceTurn']+=1
     if self.source_failures.get(source,{}).get('retryAfter',0)>time.time():continue
     queue=self.state['queues'].setdefault(source,[])
     while queue:
@@ -302,10 +361,13 @@ class PoolStore:
    turn=self.state.get('preferenceQueryTurn',0);self.state['preferenceQueryTurn']=turn+1
    query=self.taste.discovery_query(turn) if self.taste and supports else None
    pages=self.state.setdefault('preferenceQueryPages',{});key=source+'|'+str(query);query_page=pages.get(key,1)
-  if not query:return self.client.catalogue(source,page,limit)
-  result=self.client.catalogue(source,query_page,limit,query=query)
-  with self.lock:pages[key]=result.get('nextPage') or 1
-  return {**result,'nextPage':page,'preferenceQuery':query}
+  if not query:result=self.client.catalogue(source,page,limit)
+  else:
+   result=self.client.catalogue(source,query_page,limit,query=query)
+   with self.lock:pages[key]=result.get('nextPage') or 1
+   result={**result,'nextPage':page,'preferenceQuery':query}
+  result['items']=sorted(result['items'],key=lambda item:item.get('sourceRating')=='NSFW',reverse=True)
+  return result
  def refill_batch(self):
   self.last_batch_attempted=0
   promoted=0
@@ -316,21 +378,22 @@ class PoolStore:
     queue=rank_records([self.taste.evaluate(r)[2] for r in self.state.get('portraitPending',[])])
     for _ in range(len(queue)):
      index=0
-     if self.taste.state.get('targetRealisticPercent',0):
-      want=sum(self.taste.is_realistic(r) for r in self.state['ready']+self.state['reserve'])<self.taste.realistic_target(self.target+self.reserve_target)
-      index=next((i for i,r in enumerate(queue) if self.taste.is_realistic(r)==want),0)
+     eligible=[r for r in queue if self.taste.evaluate(r)[0]=='accept']
+     preferred=self._mix_candidates(eligible,self.state['ready']+self.state['reserve'],self.target+self.reserve_target)
+     if preferred:index=queue.index(preferred[0])
      r=queue.pop(index)
      decision,_,selected=self.taste.evaluate(r)
      if decision=='accept' and len(self.state['ready'])+len(self.state['reserve'])<self.target+self.reserve_target:
       selected['addedAt']=now_iso();(self.state['ready'] if len(self.state['ready'])<self.target else self.state['reserve']).append(normalize_record(selected));promoted+=1
      else:keep.append(r)
     self.state['portraitPending']=keep
-    if promoted:self._save()
+    if promoted:self.state['lastAddedAt']=now_iso();self._save()
    needed=self.target+self.reserve_target-len(self.state['ready'])-len(self.state['reserve'])
    if self.taste and len(self.state.get('portraitPending',[]))>=self.target+self.reserve_target:self.state['status']='新头像待核验；待用库存仅计符合偏好的人像';self._save();return 0
-  if needed<=0:return promoted
+  with self.lock:buffer_space=self.target+self.reserve_target-len(self.state.get('portraitPending',[]))
+  if needed<=0 and buffer_space<=0:return promoted
   candidates=[]
-  for _ in range(min(3,needed)):
+  for _ in range(min(3,needed if needed>0 else buffer_space)):
    item=self._next_candidate()
    if item:candidates.append(item)
   if not candidates:return 0
@@ -345,6 +408,48 @@ class PoolStore:
     finally:
      with self.lock:self.pending.discard(item['url'])
   return added
+ def refresh_definitions(self,limit=2,interval=21600):
+  """Bounded full-source refresh; manual edits survive and new pictures need review."""
+  with self.lock:
+   records=sorted((copy.deepcopy(r) for r in self.state['ready']+self.state['reserve'] if time.time()-r.get('sourceCheckedAt',0)>=interval),key=lambda r:r.get('sourceCheckedAt',0))[:limit]
+  for original in records:
+   if self.stop_event.is_set():break
+   try:
+    source=original.get('catalogueSource') or original.get('metricsSource');endpoint=(original.get('raw') or {}).get('apiEndpoint')
+    if not endpoint:raise ValueError('来源未提供完整详情更新地址')
+    result=self.client.read({'source':source,'url':original['source'],'endpoint':endpoint})
+    fresh=result['record'];draft=copy.deepcopy(original)
+    for key in FIELDS:
+     if original.get('fieldSources',{}).get(key)!='手动编辑':
+      draft[key]=fresh.get(key,'');draft.setdefault('fieldSources',{})[key]=fresh.get('fieldSources',{}).get(key,'原站更新')
+    for key in ('raw','sourceMetrics','sourceRating','metricsAt','sourceRanking','readAt'):
+     if key in fresh:draft[key]=fresh[key]
+    draft['avatarSource']=fresh.get('avatarSource') or fresh.get('avatar','')
+    image=result.get('image')
+    if image is None:image,url=fetch_record_avatar(draft);draft['avatarSource']=url
+    draft['avatarAsset']=cache_avatar(self.directory,draft,image)
+    draft['sourceCheckedAt']=time.time();draft['sourceUpdatedAt']=now_iso();draft.pop('sourceUpdateError',None)
+    accepted,reason,draft=evaluate(draft)
+    decision='accept' if accepted else 'reject'
+    if accepted and self.taste:decision,reason,draft=self.taste.evaluate(draft)
+    with self.lock:
+     for group in ('ready','reserve'):
+      index=next((i for i,r in enumerate(self.state[group]) if r['id']==original['id']),None)
+      if index is None:continue
+      current=self.state[group][index]
+      if any(current.get(k)!=original.get(k) for k in (*FIELDS,'fieldSources','avatarAsset','userPreference')):break
+      old,duplicate=self._duplicate(draft)
+      if old:decision='reject';reason='去重：'+duplicate
+      if decision=='accept':self.state[group][index]=normalize_record(draft)
+      else:
+       self.state[group].pop(index)
+       if decision=='pending':draft['pendingReason']=reason;self.state.setdefault('portraitPending',[]).append(normalize_record(draft))
+       else:self.state['retired'].append({**draft,'retiredReason':reason,'retiredAt':now_iso()})
+      self.seen_content.add(fingerprint(draft));self._promote();self._save();break
+   except Exception as error:
+    with self.lock:
+     for r in self.state['ready']+self.state['reserve']:
+      if r['id']==original['id']:r['sourceUpdateError']=str(error)[:180];r['sourceCheckedAt']=time.time();self._save();break
  def check_heads(self):
   for source in self.sources:
    if self.stop_event.is_set():break
@@ -379,6 +484,7 @@ class PoolStore:
   while not self.stop_event.is_set():
    self.wake.clear()
    try:
+    if time.time()-self.state['lastHeadCheck']>=900:self.check_heads();self.refresh_definitions()
     with self.lock:
      needs=len(self.state['ready'])<self.target or len(self.state['reserve'])<self.reserve_target;self.busy=needs
     if needs:
@@ -391,7 +497,9 @@ class PoolStore:
      self.wake.wait(0.5 if added or self.last_batch_attempted else 8)
     else:
      self.sync_avatars()
-     if time.time()-self.state['lastHeadCheck']>=900:self.check_heads()
+     if time.time()-self.state.get('lastCandidateCheck',0)>=60:
+      self.refill_batch()
+      with self.lock:self.state['lastCandidateCheck']=time.time();self._save()
      with self.lock:self.busy=False;self.state['status']='库存已满，用一个自动补一个'
      self.wake.wait(30)
    except Exception as error:
@@ -400,4 +508,7 @@ class PoolStore:
  def start(self):
   if self.thread and self.thread.is_alive():return
   self.thread=threading.Thread(target=self._run,name='bot-shelf-refill',daemon=True);self.thread.start()
- def close(self):self.stop_event.set();self.wake.set()
+ def close(self):
+  self.stop_event.set();self.wake.set()
+  if self.thread and self.thread is not threading.current_thread():self.thread.join()
+  self.writer_lock.close()
