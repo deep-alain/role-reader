@@ -3,7 +3,7 @@ import copy,json,os,re,threading
 from pathlib import Path
 from datetime import datetime,timezone
 from source_metrics import number
-from preference_learning import features,identities,build_model,affinity,model_summary,matching_votes,vote_order
+from preference_learning import features,identities,build_model,affinity,model_summary,matching_votes,vote_order,type_rule,blocked_types
 
 ALLOWED_STYLES={'portrait','photo','detailed_illustration','rendered_portrait','glamour_portrait'}
 REJECTED_STYLES={'default_icon','no_person','faint_sketch','chibi_cartoon','other_rejected'}
@@ -26,7 +26,7 @@ class TasteProfile:
    if self._model is None:self._model=build_model(self.state['feedback'])
    return self._model
  def snapshot(self):
-  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'learning':model_summary(self.model()),'targetRealisticPercent':self.state['targetRealisticPercent'],'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'多来／不要会学习题材、已核验的头像风格和人物特征，影响相似角色排序与补货；单次不要不封禁整个题材。成年、不露点、人像核验和热度门槛保持优先。'}
+  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'learning':model_summary(self.model()),'targetRealisticPercent':self.state['targetRealisticPercent'],'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'“不要此类”会记住题材与人物特征组合，今后的读取、推荐和补货直接过滤同类；通用插画、人物头像、性别不作为整类禁令。可撤销。成年、不露点、人像核验和热度门槛保持优先。'}
  def hydrate_feedback(self,records):
   by_source={r.get('source'):r for r in records};changed=False
   with self.lock:
@@ -55,7 +55,9 @@ class TasteProfile:
     self._model=None;self._save();return
    portrait=self.state['portraits'].get((record.get('avatarAsset') or {}).get('sha256'),{})
    sequence=max((v.get('sequence',0) for v in self.state['feedback'].values()),default=0)+1
-   self.state['feedback'][record['source']]={'choice':choice,'name':record['name'],'sha256':(record.get('avatarAsset') or {}).get('sha256'),'at':datetime.now(timezone.utc).isoformat(),'sequence':sequence,'features':features(record,portrait,choice),'identityKeys':identities(record)};self._model=None;self._save()
+   vote={'choice':choice,'name':record['name'],'sha256':(record.get('avatarAsset') or {}).get('sha256'),'at':datetime.now(timezone.utc).isoformat(),'sequence':sequence,'features':features(record,portrait,choice),'identityKeys':identities(record)}
+   if choice=='less':vote['typeRule']=type_rule(record,portrait)
+   self.state['feedback'][record['source']]=vote;self._model=None;self._save()
  def review(self,record,style,medium=None):
   if style not in ALLOWED_STYLES|REJECTED_STYLES:raise ValueError('无效头像风格')
   asset=record.get('avatarAsset') or {};digest=asset.get('sha256')
@@ -71,6 +73,9 @@ class TasteProfile:
      rest=[f for f in vote['features'] if not f.startswith(('style:','medium:'))]
      visual=features({},self.state['portraits'][digest],vote['choice'])
      vote['features']=sorted(set(visual+(rest if style in ALLOWED_STYLES else [])))
+     if vote.get('choice')=='less' and 'typeRule' in vote:
+      specific=[f for f in vote['typeRule']['features'] if not f.startswith('style:')]
+      vote['typeRule']['features']=['style:'+style] if style in REJECTED_STYLES else specific
    self._model=None
    self._save()
  def evaluate(self,record):
@@ -79,6 +84,10 @@ class TasteProfile:
    matches=matching_votes(self.state['feedback'],r)
    vote=copy.deepcopy(sorted(matches.values(),key=vote_order)[-1] if matches else {});portrait=copy.deepcopy(self.state['portraits'].get(digest) or {})
   if vote.get('choice')=='less':return 'reject','已按你的标注排除（同源、同图或相同人设）',r
+  excluded=blocked_types(r,portrait,self.model())
+  if excluded:
+   r['excludedTypes']=[rule['key'] for rule in excluded]
+   return 'reject','已按你的标注排除类型：'+'；'.join(rule['label'] for rule in excluded),r
   tags=' '.join(str(r.get(k) or '') for k in ('name','category')).replace('_',' ')
   if re.search(r'\b(?:fnf|friday night funkin|chibi|funko|pixel art)\b|Q版|像素风',tags,re.I):return 'reject','排除 Q 版、游戏简笔卡通',r
   style=portrait.get('style')

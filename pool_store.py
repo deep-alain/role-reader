@@ -107,13 +107,13 @@ class PoolStore:
    old_queries=self.taste.model()['queries'][:]
    record=self.get_record(record_id,include_retired=True);self.taste.feedback(record,choice)
    if choice in ('more','clear'):
-    from preference_learning import identities
-    keys=set(identities(record));keep=[]
+    keep=[]
     for r in self.state['retired']:
-     if r.get('retiredReason','').startswith('已按你的标注排除') and keys.intersection(identities(r)):
-      candidate=copy.deepcopy(r);candidate.pop('retiredReason',None);candidate.pop('retiredAt',None)
+     if r.get('retiredReason','').startswith('已按你的标注排除'):
+      candidate=copy.deepcopy(r);candidate.pop('retiredReason',None);candidate.pop('retiredAt',None);candidate.pop('excludedTypes',None)
       accepted,_,candidate=evaluate(candidate)
-      if accepted and not self._duplicate(candidate)[0]:self.state.setdefault('portraitPending',[]).append(candidate)
+      decision,_,candidate=self.taste.evaluate(candidate) if accepted else ('reject','',candidate)
+      if decision!='reject' and not self._duplicate(candidate)[0]:self.state.setdefault('portraitPending',[]).append(candidate)
       else:keep.append(r)
      else:keep.append(r)
     self.state['retired']=keep
@@ -125,7 +125,12 @@ class PoolStore:
      if r['id']==record_id:self.state['retired'].append({**r,'retiredReason':'已按你的标注排除','retiredAt':now_iso()})
     self.state['portraitPending']=[r for r in queue if r['id']!=record_id];self._save()
    learned=self.taste.snapshot()['learning']
-   return {'ok':True,'choice':choice,'learning':learned,'effect':'已撤销本条及镜像的偏好；符合规则的角色回到候选，不增加使用次数。' if choice=='clear' else '已提高本条及相似题材、画风的优先级；重复点击不重复计票。' if choice=='more' else '已排除本条和同图／相同人设；相似特征累计独立反例后降权，不封禁整个题材。'}
+   if choice=='less':
+    from preference_learning import matching_votes,vote_order,label
+    votes=matching_votes(self.taste.state['feedback'],record);vote=max(votes.values(),key=vote_order);rule=vote.get('typeRule') or {}
+    effect='已记住并排除此类：'+' ＋ '.join(label(f) for f in rule.get('features',[]))+'；今后的读取、推荐和补货直接过滤，跨来源生效。' if rule.get('features') else '已排除本条及同图／相同人设；这条资料缺少可识别的具体类型，未扩大到通用人像或性别。'
+   else:effect='已撤销本条及镜像的偏好和类型排除；不再被其他规则排除的角色回到候选，使用次数不变。' if choice=='clear' else '已提高本条及相似题材、画风的优先级，解除本样本的类型排除；其他独立排除继续有效。'
+   return {'ok':True,'choice':choice,'learning':learned,'effect':effect}
  def review_portrait(self,record_id,digest,style,medium=None,evidence=None):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:
@@ -284,9 +289,11 @@ class PoolStore:
    if not accepted:
     with self.lock:self.seen_keys.add(key);self._save()
     return False
-   decision,_,record=self.taste.evaluate(record)
+   decision,reason,record=self.taste.evaluate(record)
    if decision=='reject':
-    with self.lock:self.seen_keys.add(key);self._save()
+    with self.lock:
+     if key not in self.seen_keys:
+      self.seen_keys.add(key);self.seen_content.add(fp);self.state['retired'].append({**record,'retiredReason':reason,'retiredAt':now_iso()});self._save()
     return False
    record['id']=hashlib.sha256(key.encode()).hexdigest()[:24]
    if not record.get('avatarAsset'):
@@ -311,6 +318,15 @@ class PoolStore:
    if key in self.seen_keys or fp in self.seen_content:return False
    accepted,reason,record=evaluate(record)
    if not accepted:self.seen_keys.add(key);self._save();return False
+   if self.taste:
+    # Recheck under the same lock as feedback, including changes during avatar downloads.
+    decision,reason,record=self.taste.evaluate(record)
+    if decision!='accept':
+     if decision=='pending' and len(self.state.get('portraitPending',[]))>=self.target+self.reserve_target:return False
+     self.seen_keys.add(key);self.seen_content.add(fp)
+     if decision=='pending':record['pendingReason']=reason;self.state.setdefault('portraitPending',[]).append(record)
+     else:self.state['retired'].append({**record,'retiredReason':reason,'retiredAt':now_iso()})
+     self._save();return False
    record=normalize_record(record)
    # A shelf slot must contain real character content, never a failed request or empty placeholder.
    if record['error'] or any(not record[k] for k in ('name','avatar','prompt','greet')):
@@ -333,7 +349,7 @@ class PoolStore:
   return key not in self.seen_keys and key not in self.pending and not(failure and failure['retryAfter']>time.time())
  def sync_avatars(self):
   with self.lock:
-   records=[copy.deepcopy(r) for r in self.state['ready']+self.state['reserve'] if not r.get('avatarAsset') and r.get('avatarRetryAfter',0)<time.time()]
+   records=[copy.deepcopy(r) for group in ('ready','reserve','portraitPending','portraitDeferred') for r in self.state.get(group,[]) if not r.get('avatarAsset') and r.get('avatarRetryAfter',0)<time.time()][:8]
   def download(record):
    try:
     data,url=fetch_record_avatar(record);candidate={**record,'avatarSource':url}
@@ -342,7 +358,7 @@ class PoolStore:
   with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
    for original,asset,error in executor.map(download,records):
     with self.lock:
-     for record in self.state['ready']+self.state['reserve']+self.state['history']:
+     for record in self.state['ready']+self.state['reserve']+self.state['history']+self.state.get('portraitPending',[])+self.state.get('portraitDeferred',[]):
       if record['id']==original['id'] and record.get('avatarSource')==original.get('avatarSource'):
        if asset:record['avatarAsset']=asset;record['avatarSource']=asset['source'];record.pop('avatarError',None)
        else:record['avatarError']=error;record['avatarRetryAfter']=time.time()+300
@@ -433,7 +449,7 @@ class PoolStore:
   if reviewer is None or not reviewer.available():return 0
   version=reviewer.snapshot()['modelVersion'];reviewed=0
   with self.lock:
-   records=[copy.deepcopy(r) for r in self.state.get('portraitPending',[]) if (r.get('avatarAsset') or {}).get('review')!='approved' and r.get('autoReviewAttempt')!={'version':version,'sha256':(r.get('avatarAsset') or {}).get('sha256')}][:limit]
+   records=[copy.deepcopy(r) for r in self.state.get('portraitPending',[]) if (r.get('avatarAsset') or {}).get('sha256') and (r.get('avatarAsset') or {}).get('review')!='approved' and r.get('autoReviewAttempt')!={'version':version,'sha256':(r.get('avatarAsset') or {}).get('sha256')}][:limit]
   for record in records:
    if self.stop_event.is_set():break
    result=reviewer(record);digest=(record.get('avatarAsset') or {}).get('sha256')
@@ -477,6 +493,7 @@ class PoolStore:
       if index is None:continue
       current=self.state[group][index]
       if any(current.get(k)!=original.get(k) for k in (*FIELDS,'fieldSources','avatarAsset','userPreference')):break
+      if decision!='reject' and self.taste:decision,reason,draft=self.taste.evaluate(draft)
       old,duplicate=self._duplicate(draft)
       if old:decision='reject';reason='去重：'+duplicate
       if decision=='accept':self.state[group][index]=normalize_record(draft)
@@ -537,7 +554,7 @@ class PoolStore:
      with self.lock:self.state['status']='正在补货；已读取 '+str(len(self.state['ready']))+' / '+str(self.target)
      with self.collection_lock:
       if self.collection_paused.is_set():added=0
-      else:self.auto_review_pending();added=self.refill_batch();self.auto_review_pending()
+      else:self.sync_avatars();self.auto_review_pending();added=self.refill_batch();self.auto_review_pending()
      with self.lock:
       full=len(self.state['ready'])==self.target and len(self.state['reserve'])==self.reserve_target
       self.busy=not full

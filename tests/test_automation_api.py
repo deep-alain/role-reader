@@ -43,5 +43,17 @@ class AutomationApiTests(unittest.TestCase):
    with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/automation/start',body)
    self.assertEqual(error.exception.code,400)
   self.assertEqual(self.server.automation.snapshot()['job']['status'],'idle')
+ def test_excluded_types_are_hidden_from_batch_results_even_for_used_history(self):
+  from taste_profile import TasteProfile
+  from test_preference_learning import role
+  self.pool.taste=TasteProfile(self.temp.name)
+  used,excluded=role('used'),role('excluded')
+  for record in (used,excluded):self.pool.taste.review(record,'detailed_illustration')
+  used['usedAt']='2026-10-22T00:00:00Z';self.pool.state['history']=[used]
+  self.server.automation.state['qualifiedIds']=[used['id']]
+  self.assertEqual(self.request('/api/automation/results')['count'],1)
+  self.pool.taste.feedback(excluded,'less')
+  self.assertEqual(self.request('/api/automation/results')['count'],0)
+  self.assertEqual(self.pool.snapshot()['usedCount'],1);self.assertEqual(self.pool.state['history'][0]['usedAt'],used['usedAt'])
 
 if __name__=='__main__':unittest.main()

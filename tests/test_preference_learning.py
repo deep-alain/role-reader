@@ -29,14 +29,14 @@ class FeedbackTests(unittest.TestCase):
   a=self.taste.evaluate(similar)[2];b=self.taste.evaluate(other)[2]
   self.assertGreater(a['preferenceLearning']['score'],b['preferenceLearning']['score']);self.assertIn('哥特',a['learnedPreferenceReason'])
   self.assertEqual(rank_records([b,a])[0]['id'],a['id']);self.assertEqual(a['sourceMetrics']['views'],500)
- def test_one_dislike_is_specific_two_independent_dislikes_softly_reduce_similarity(self):
+ def test_one_dislike_blocks_the_type_without_waiting_for_a_second_vote(self):
   first=self.vote('no1','less');similar=self.reviewed('similar')
   self.assertEqual(self.taste.evaluate(first)[0],'reject')
-  self.assertEqual(self.taste.evaluate(similar)[2]['preferenceLearning']['score'],0)
-  self.vote('no2','less');decision,_,selected=self.taste.evaluate(similar)
-  self.assertEqual(decision,'accept');self.assertLess(selected['preferenceLearning']['score'],0)
-  neutral=self.taste.evaluate(self.reviewed('neutral',theme='职场与名流',style='photo',medium='photorealistic'))[2]
-  self.assertEqual(rank_records([selected,neutral])[0]['id'],'neutral')
+  self.assertEqual(self.taste.evaluate(similar)[0],'reject')
+  self.assertEqual(self.taste.model()['blockedTypes'][0]['blockedBy'],1)
+  self.vote('no2','less');self.assertEqual(self.taste.evaluate(similar)[0],'reject')
+  neutral=self.reviewed('neutral',theme='职场与名流',style='photo',medium='photorealistic')
+  self.assertEqual(self.taste.evaluate(neutral)[0],'accept')
  def test_repeated_clicks_overwrite_a_vote_and_do_not_manufacture_support(self):
   r=self.vote('same')
   for _ in range(5):self.taste.feedback(r,'more')
@@ -124,8 +124,8 @@ class ShelfFeedbackTests(unittest.TestCase):
    for r in (a,b):
     request=urllib.request.Request('http://127.0.0.1:'+str(server.server_port)+'/api/pool/feedback',data=json.dumps({'id':r['id'],'choice':'less'}).encode(),headers={'Content-Type':'application/json'})
     with urllib.request.urlopen(request,timeout=5) as response:result=json.load(response)
-   self.assertEqual(result['pool']['usedCount'],0);self.assertLess(result['pool']['portraitPending'][0]['preferenceLearning']['score'],0)
-   self.assertEqual(result['pool']['ready'],[]);self.assertIn('相似',result['effect'])
+   self.assertEqual(result['pool']['usedCount'],0);self.assertEqual(result['pool']['portraitPending'],[])
+   self.assertEqual(result['pool']['ready'],[]);self.assertIn('排除此类',result['effect']);self.assertTrue(result['learning']['blockedTypes'])
   finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__':unittest.main()

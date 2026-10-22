@@ -8,6 +8,35 @@ STYLE_NAMES={'portrait':'人物头像','photo':'真人／写实人像','detailed
 MEDIUM_NAMES={'photorealistic':'照片／拟真人','illustration':'插画','rendered':'渲染'}
 TRAITS={'confident':'自信','gentle':'温柔','protective':'守护','shy':'害羞','slow burn':'慢热','tsundere':'傲娇','yandere':'占有欲'}
 QUERY_MAP={'哥特与冷感反差':'goth','奇幻人外':'elf','室友与同居':'roommate','青梅与朋友转恋人':'childhood friend','恋人关系冲突':'girlfriend','职场与名流':'coworker','脆弱与守护':'roommate','占有欲与反差':'girlfriend'}
+TYPE_TAGS={
+ 'elf':('精灵',r'\b(?:elf|elven)\b|精灵'),
+ 'demon':('恶魔',r'\b(?:demon|succubus)\b|恶魔|魅魔'),
+ 'fox':('狐系人物',r'\b(?:kitsune|foxgirl)\b|狐娘|狐狸'),
+ 'android':('仿生人',r'\bandroid\b|仿生人'),
+ 'jock':('运动型人物',r'\b(?:jock|himbo|athlete)\b|运动员'),
+ 'mafia':('黑帮人物',r'\b(?:mafia|gangster)\b|黑帮|帮派'),
+ 'bodyguard':('保镖',r'\bbodyguard\b|保镖'),
+ 'model':('模特',r'\b(?:supermodel|fashion model|runway)\b|模特|名模'),
+ 'knight':('骑士',r'\bknight\b|骑士'),
+ 'maid':('女仆',r'\bmaid\b|女仆'),
+ 'dominant':('强势人物',r'\bdominant\b|强势'),
+ 'submissive':('顺从人物',r'\bsubmissive\b|顺从'),
+}
+
+def type_features(record,portrait=None):
+ """Specific combinations, never a blanket ban on gender or ordinary artwork."""
+ portrait=portrait or {};style=portrait.get('style')
+ if style in {'default_icon','no_person','faint_sketch','chibi_cartoon','other_rejected'}:return ['style:'+style]
+ selected=[f for f in features(record,portrait) if f.startswith(('theme:','trait:'))]
+ meta=' '.join(str(record.get(k) or '') for k in ('name','category')).replace('_',' ').replace('-',' ')
+ selected.extend('type:'+key for key,(_,pattern) in TYPE_TAGS.items() if re.search(pattern,meta,re.I))
+ return sorted(set(selected))
+
+def type_rule(record,portrait=None):return {'version':1,'features':type_features(record,portrait)}
+
+def blocked_types(record,portrait,model):
+ values=set(type_features(record,portrait))
+ return [rule for rule in model.get('blockedTypes',[]) if rule['features'] and set(rule['features']).issubset(values)]
 
 def features(record,portrait=None,choice=None):
  portrait=portrait or {};out=[]
@@ -37,7 +66,7 @@ def identities(record):
 
 def label(feature):
  kind,value=feature.split(':',1)
- return STYLE_NAMES.get(value,value) if kind=='style' else MEDIUM_NAMES.get(value,value) if kind=='medium' else TRAITS.get(value,value) if kind=='trait' else value
+ return STYLE_NAMES.get(value,value) if kind=='style' else MEDIUM_NAMES.get(value,value) if kind=='medium' else TRAITS.get(value,value) if kind=='trait' else TYPE_TAGS.get(value,(value,''))[0] if kind=='type' else value
 
 def matching_votes(feedback,record):
  """Resolve the same transitive identity cluster used when learning."""
@@ -66,12 +95,19 @@ def build_model(feedback):
    owners[key]=i
  latest={}
  for i,(_,vote) in enumerate(rows):latest[find(i)]=vote
- stats=defaultdict(lambda:{'more':0,'less':0})
+ stats=defaultdict(lambda:{'more':0,'less':0});excluded={}
  learned=0
  for vote in latest.values():
-  if not vote.get('features') or vote.get('choice') not in ('more','less'):continue
+  if vote.get('choice') not in ('more','less'):continue
+  if not vote.get('features') and not (vote.get('typeRule') or {}).get('features'):continue
   learned+=1
-  for feature in set(vote['features']):stats[feature][vote['choice']]+=1
+  for feature in set(vote.get('features',[])):stats[feature][vote['choice']]+=1
+  if vote['choice']=='less' and isinstance(vote.get('typeRule'),dict):
+   rule_features=sorted(set(f for f in vote['typeRule'].get('features',[]) if isinstance(f,str)))
+   if rule_features:
+    key=hashlib.sha256('\n'.join(rule_features).encode()).hexdigest()[:16]
+    rule=excluded.setdefault(key,{'key':key,'features':rule_features,'label':' ＋ '.join(label(f) for f in rule_features),'blockedBy':0})
+    rule['blockedBy']+=1
  for feature,value in stats.items():
   positive,negative=value['more'],value['less'];support=positive+negative
   value.update(feature=feature,label=label(feature),support=support,
@@ -80,8 +116,8 @@ def build_model(feedback):
  for feature,value in sorted(stats.items(),key=lambda pair:pair[1]['score'],reverse=True):
   if value['more']<2 or value['score']<=0:continue
   query=QUERY_MAP.get(feature.removeprefix('theme:')) if feature.startswith('theme:') else 'realistic girlfriend' if feature=='medium:photorealistic' else 'model girlfriend' if feature=='style:glamour_portrait' else None
-  if query and query not in queries:queries.append(query)
- return {'version':1,'uniqueExamples':learned,'stats':dict(stats),'queries':queries[:5]}
+  if query and query not in queries and not any(rule['features']==[feature] for rule in excluded.values()):queries.append(query)
+ return {'version':2,'uniqueExamples':learned,'stats':dict(stats),'queries':queries[:5],'blockedTypes':list(excluded.values())}
 
 def affinity(feature_list,model):
  matches=[model['stats'][f] for f in feature_list if f in model['stats'] and model['stats'][f]['score']]
@@ -95,6 +131,6 @@ def affinity(feature_list,model):
 
 def model_summary(model):
  values=list(model['stats'].values())
- return {'version':1,'uniqueExamples':model['uniqueExamples'],'preferredFeatures':sorted((v for v in values if v['score']>0),key=lambda v:v['score'],reverse=True)[:5],
+ return {'version':2,'uniqueExamples':model['uniqueExamples'],'preferredFeatures':sorted((v for v in values if v['score']>0),key=lambda v:v['score'],reverse=True)[:5],
          'downrankedFeatures':sorted((v for v in values if v['score']<0),key=lambda v:v['score'])[:5],
-         'discoveryQueries':model['queries'],'explanation':'同源、同图或相同人设合并计票；一次不要排除本条，两次独立反例后相似特征才降权。每四次目录读取保留一次原有轮换，避免只推荐一种题材。'}
+         'blockedTypes':model.get('blockedTypes',[]),'discoveryQueries':model['queries'],'explanation':'点“不要此类”立即排除该角色的题材与人物特征组合，跨来源生效；同源、同图或相同人设合并。撤销可解除该样本贡献的排除，其他独立排除继续有效。'}

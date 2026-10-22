@@ -64,7 +64,7 @@ class Handler(SimpleHTTPRequestHandler):
   host=self.headers.get('Host','').split(':')[0]
   if host not in ('127.0.0.1','localhost'):return self.json_reply({'error':'Localhost access only'},403)
   parsed=urllib.parse.urlsplit(self.path)
-  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.11.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
+  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.11.1','sources':list(ALLOWED),'pool':hasattr(self.server,'pool'),'feedbackTypeExclusions':True})
   if parsed.path=='/api/automation':return self.json_reply(self.automation_snapshot()) if hasattr(self.server,'automation') else self.json_reply({'error':'自动读取服务未启动'},503)
   if parsed.path=='/api/automation/results':
    if not hasattr(self.server,'automation'):return self.json_reply({'error':'自动读取服务未启动'},503)
@@ -74,7 +74,12 @@ class Handler(SimpleHTTPRequestHandler):
    for role_id in ids:
     try:record=self.server.pool.get_record(role_id)
     except KeyError:continue
-    if (record.get('avatarAsset') or {}).get('review')=='approved':records.append(record)
+    if (record.get('avatarAsset') or {}).get('review')=='approved':
+     taste=getattr(self.server.pool,'taste',None)
+     if taste:
+      decision,_,record=taste.evaluate(record)
+      if decision!='accept':continue
+     records.append(record)
    records=rank_records(records,self.server.rules.snapshot()['rules'] if hasattr(self.server,'rules') else None)
    return self.json_reply({'jobId':job_id,'records':records,'count':len(records)})
   if parsed.path=='/api/rules':return self.json_reply(self.server.rules.snapshot()) if hasattr(self.server,'rules') else self.json_reply({'error':'规则服务未启动'},503)
@@ -155,7 +160,7 @@ if __name__=='__main__':
   try:
    with urllib.request.urlopen(f'http://127.0.0.1:{args.port}/api/status',timeout=2) as existing:
     status=json.load(existing)
-   if status.get('roleReaderApi') and status.get('version')=='1.11.0':
+   if status.get('roleReaderApi') and status.get('version')=='1.11.1':
     url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader is already running: '+url,flush=True)
     if not args.no_browser:webbrowser.open(url)
     raise SystemExit(0)
