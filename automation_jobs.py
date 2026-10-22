@@ -306,6 +306,9 @@ class AutomationJobs:
                              reviewReason=reason)
             if len(attempted) % 3 == 0:
                 break
+        index = getattr(self.pool, 'index_cover_embeddings', None)
+        if callable(index) and not self.cancel_event.is_set():
+            index(limit=3)
 
     def _defer_record(self, record, reason):
         defer = getattr(self.pool, 'defer_portraits', None)

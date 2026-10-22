@@ -6,7 +6,7 @@ from source_metrics import number
 DEFAULT_RULES={'version':1,'minimumViews':0,'minimumMessages':0,'minimumLikes':0,'verifiedAdultsFirst':True,'safeAvatarsOnly':True}
 RULE_TEXT=['排除未成年、学校设定、年龄扮演与 NSFL；年龄未确认的候选只进入待核验列表。',
  '优先成熟魅力人像、真人 / 写实风格及你标记多来的角色；精细人物插画可保留，默认图标、非人像、过淡线稿、Q版卡通排除。新图检查通过前不计入待用库存。',
- '已确认成年优先；原站真实 NSFW 分级优先，再按成熟人像偏好和热度排序。分级未知不当作 NSFW，SFW 不改标签。',
+ '已确认成年优先；原站真实 NSFW 分级优先，再按正向封面参考的真实图像相似度、成熟人像偏好和热度排序。图像相似度不代表暴露比例或安全概率；分级未知不当作 NSFW，SFW 不改标签。',
  '有真实浏览数时按浏览数排序；未提供浏览数时使用原站消息/互动榜，并单独标注热度依据。',
  '跨站使用本批各来源内部热度顺序，不把消息、点击、收藏或评分换算成浏览数。',
  '同档再按真实点赞/收藏排序；缺失计数保持未知，真实的 0 保留为 0。',
@@ -80,5 +80,6 @@ def rank_records(records,rules=None):
  def key(r):
   stat=r.get('metrics') or r.get('sourceMetrics') or {};ranking=r['ranking']
   learned=r.get('preferenceLearning') or {}
-  return (ranking['ageStatus']=='verified',r.get('sourceRating')=='NSFW',r.get('userPreference')=='more',learned.get('band',0),r.get('preferencePriority',0),learned.get('score',0),ranking['heatValue'] is not None,ranking['sourceOrder'],number(stat.get('likes')) if number(stat.get('likes')) is not None else -1,number(stat.get('favorites')) if number(stat.get('favorites')) is not None else -1,ranking['completeFields'])
+  cover=number((r.get('coverPreference') or {}).get('score'))
+  return (ranking['ageStatus']=='verified',r.get('sourceRating')=='NSFW',r.get('userPreference')=='more',cover if cover is not None else -1,learned.get('band',0),r.get('preferencePriority',0),learned.get('score',0),ranking['heatValue'] is not None,ranking['sourceOrder'],number(stat.get('likes')) if number(stat.get('likes')) is not None else -1,number(stat.get('favorites')) if number(stat.get('favorites')) is not None else -1,ranking['completeFields'])
  return sorted(included,key=key,reverse=True)

@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime,timezone
 from source_metrics import number
 from preference_learning import features,identities,build_model,affinity,model_summary,matching_votes,vote_order,type_rule,blocked_types
+from cover_preferences import CoverPreferences
 
 ALLOWED_STYLES={'portrait','photo','detailed_illustration','rendered_portrait','glamour_portrait'}
 REJECTED_STYLES={'default_icon','no_person','faint_sketch','chibi_cartoon','other_rejected'}
@@ -18,7 +19,7 @@ class TasteProfile:
    saved=json.loads(self.path.read_text(encoding='utf-8'))
    for key in ('feedback','portraits'):self.state[key].update(saved.get(key,{}))
    self.state['targetRealisticPercent']=saved.get('targetRealisticPercent',0)
-  self._model=None;self._save()
+  self.covers=CoverPreferences(directory);self._model=None;self._save()
  def _save(self):
   self.path.parent.mkdir(parents=True,exist_ok=True);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(self.state,ensure_ascii=False,indent=2),encoding='utf-8');os.replace(tmp,self.path)
  def model(self):
@@ -26,7 +27,7 @@ class TasteProfile:
    if self._model is None:self._model=build_model(self.state['feedback'])
    return self._model
  def snapshot(self):
-  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'learning':model_summary(self.model()),'targetRealisticPercent':self.state['targetRealisticPercent'],'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'“不要此类”会记住题材与人物特征组合，今后的读取、推荐和补货直接过滤同类；通用插画、人物头像、性别不作为整类禁令。可撤销。成年、不露点、人像核验和热度门槛保持优先。'}
+  with self.lock:return {'liked':sum(f['choice']=='more' for f in self.state['feedback'].values()),'rejected':sum(f['choice']=='less' for f in self.state['feedback'].values()),'learning':model_summary(self.model()),'cover':{**self.covers.snapshot(),'enabled':True},'targetRealisticPercent':self.state['targetRealisticPercent'],'heatFloors':dict(LIMITS),'styles':[STYLE_LABELS[s] for s in sorted(ALLOWED_STYLES)],'explanation':'“不要此类”会记住题材与人物特征组合，今后的读取、推荐和补货直接过滤同类；通用插画、人物头像、性别不作为整类禁令。可撤销。成年、不露点、人像核验和热度门槛保持优先。'}
  def hydrate_feedback(self,records):
   by_source={r.get('source'):r for r in records};changed=False
   with self.lock:
@@ -79,7 +80,7 @@ class TasteProfile:
    self._model=None
    self._save()
  def evaluate(self,record):
-  r=copy.deepcopy(record);asset=r.get('avatarAsset') or {};digest=asset.get('sha256');source=r.get('source','')
+  r=copy.deepcopy(record);r.pop('coverPreference',None);asset=r.get('avatarAsset') or {};digest=asset.get('sha256');source=r.get('source','')
   with self.lock:
    matches=matching_votes(self.state['feedback'],r)
    vote=copy.deepcopy(sorted(matches.values(),key=vote_order)[-1] if matches else {});portrait=copy.deepcopy(self.state['portraits'].get(digest) or {})
@@ -95,7 +96,7 @@ class TasteProfile:
   stat=r.get('sourceMetrics') or {};basis=next((k for k in LIMITS if number(stat.get(k)) is not None),None)
   if basis and stat[basis]<LIMITS[basis] and vote.get('choice')!='more':return 'reject',f'热度不足：{basis} {stat[basis]} < {LIMITS[basis]}',r
   learned=affinity(features(r,portrait),self.model());r['preferenceLearning']=learned;r['userPreference']=vote.get('choice','')
-  reason='；'.join(v['label']+'（多来 '+str(v['more'])+' / 不要 '+str(v['less'])+'）' for v in learned['evidence'][:2])
+  reason='；'.join(v['label'] for v in learned['evidence'][:2])
   r['learnedPreferenceReason']=('相似偏好加权：' if learned['score']>0 else '相似偏好降权：')+reason if learned['score'] else ''
   r['preferencePriority']=2 if style=='glamour_portrait' else 1 if style in ('photo','rendered_portrait') else 0
   # Previously unseen artwork needs a visible review; it never occupies a ready slot.
@@ -109,4 +110,10 @@ class TasteProfile:
   else:r['portraitMedium']=portrait.get('medium','unknown')
   if not basis:r['preferenceReason']+=' · 热度未提供'
   if r['learnedPreferenceReason']:r['preferenceReason']+=' · '+r['learnedPreferenceReason']
+  if self.covers.snapshot()['count']:
+   from portrait_review import CLIP_EMBEDDING_VERSION
+   embedding=self.covers.get_embedding(r,CLIP_EMBEDDING_VERSION)
+   if embedding is not None:
+    preference=self.covers.evaluate(r,embedding,CLIP_EMBEDDING_VERSION)
+    if preference:r['coverPreference']=preference
   return 'accept','符合人像和热度偏好',r

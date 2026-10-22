@@ -156,6 +156,44 @@ class PoolStore:
    elif decision=='reject':self.state['retired'].append({**selected,'retiredReason':reason,'retiredAt':now_iso()})
    else:self.state['portraitPending'].append(selected)
    self._save();self.wake.set();return {'ok':True,'decision':decision}
+ def cover_feedback(self,record_id,choice):
+  if not self.taste:raise ValueError('偏好服务未启用')
+  if choice not in ('more','clear'):raise ValueError('无效封面偏好')
+  with self.lock:record=self.get_record(record_id,include_retired=True)
+  digest=(record.get('avatarAsset') or {}).get('sha256')
+  if choice=='more':
+   reviewer=getattr(self,'portrait_reviewer',None)
+   if reviewer is None or not reviewer.available() or not hasattr(reviewer,'embedding'):raise ValueError('本机图像模型尚未就绪，请先开始批量读取准备模型')
+   evidence=reviewer.embedding(record)
+   if not evidence or evidence.get('sha256')!=digest:raise ValueError('未取得与当前头像匹配的图像特征，请稍后重试')
+  with self.lock:
+   current=self.get_record(record_id,include_retired=True)
+   if (current.get('avatarAsset') or {}).get('sha256')!=digest:raise ValueError('头像已更新，请刷新后重新标注')
+   if choice=='more':
+    self.taste.covers.put_embedding(current,evidence['embedding'],evidence['modelVersion'])
+    self.taste.covers.set_reference(current,evidence['embedding'],evidence['modelVersion'],label='相近穿着与构图（不露点）')
+   else:self.taste.covers.clear_reference(digest)
+   self.apply_preferences();self.wake.set()
+   return {'ok':True,'cover':self.taste.covers.snapshot(),'effect':'已保存封面参考；合格候选按真实图像相似度加权，不改变故事题材偏好或使用次数。' if choice=='more' else '已撤销这张封面参考，故事偏好与使用次数不变。'}
+ def index_cover_embeddings(self,limit=4):
+  if not self.taste or not self.taste.covers.snapshot()['count']:return 0
+  reviewer=getattr(self,'portrait_reviewer',None)
+  if reviewer is None or not reviewer.available() or not hasattr(reviewer,'embedding'):return 0
+  from portrait_review import CLIP_EMBEDDING_VERSION
+  with self.lock:records=[copy.deepcopy(r) for group in ('ready','reserve','portraitPending') for r in self.state.get(group,[]) if (r.get('avatarAsset') or {}).get('review')=='approved']
+  indexed=0;attempted=0
+  for record in records:
+   if self.stop_event.is_set() or attempted>=limit:break
+   if self.taste.covers.get_embedding(record,CLIP_EMBEDDING_VERSION) is not None:continue
+   attempted+=1;evidence=reviewer.embedding(record)
+   if not evidence or evidence.get('sha256')!=(record.get('avatarAsset') or {}).get('sha256'):continue
+   with self.lock:
+    try:current=self.get_record(record['id'])
+    except KeyError:continue
+    if (current.get('avatarAsset') or {}).get('sha256')!=evidence['sha256']:continue
+    self.taste.covers.put_embedding(current,evidence['embedding'],evidence['modelVersion']);indexed+=1
+  if indexed:self.apply_preferences()
+  return indexed
  def defer_portraits(self,record_ids,reason='图像判断不清，保留待确认'):
   """Quarantine uncertain artwork without blocking new collection or voting it down."""
   with self.lock:
@@ -554,7 +592,7 @@ class PoolStore:
      with self.lock:self.state['status']='正在补货；已读取 '+str(len(self.state['ready']))+' / '+str(self.target)
      with self.collection_lock:
       if self.collection_paused.is_set():added=0
-      else:self.sync_avatars();self.auto_review_pending();added=self.refill_batch();self.auto_review_pending()
+      else:self.sync_avatars();self.auto_review_pending();added=self.refill_batch();self.auto_review_pending();self.index_cover_embeddings()
      with self.lock:
       full=len(self.state['ready'])==self.target and len(self.state['reserve'])==self.reserve_target
       self.busy=not full
@@ -562,7 +600,7 @@ class PoolStore:
      self.wake.wait(0.5 if added or self.last_batch_attempted else 8)
     else:
      with self.collection_lock:
-      if not self.collection_paused.is_set():self.sync_avatars();self.auto_review_pending()
+      if not self.collection_paused.is_set():self.sync_avatars();self.auto_review_pending();self.index_cover_embeddings()
      if time.time()-self.state.get('lastCandidateCheck',0)>=60:
       with self.collection_lock:
        if not self.collection_paused.is_set():self.refill_batch()

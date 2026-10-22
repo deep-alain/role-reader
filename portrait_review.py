@@ -1,9 +1,21 @@
 """Local, reproducible image screening. Uncertain/model failures never approve."""
-import base64,concurrent.futures,hashlib,json,os,subprocess,sys,threading,time
+import base64,concurrent.futures,hashlib,json,math,os,subprocess,sys,threading,time
 from pathlib import Path
 from setup_automation import MODELS,runtime_python,sha256
 
 ROOT=Path(__file__).resolve().parent
+# Cover similarity is a feature only, never evidence that an image is safe.
+# Keep its version independent of portrait prompts and safety configuration.
+CLIP_EMBEDDING_VERSION='Xenova/clip-vit-base-patch32@d15189d7028b43f1d3e65039190477f6af591c2a:vision-int8:exif-rgb-short224-round-bicubic-center224-clip-meanstd-l2-v1'
+
+def normalized_embedding(value):
+ if not isinstance(value,(list,tuple)) or len(value)!=512 or any(isinstance(v,bool) or not isinstance(v,(int,float)) for v in value):raise ValueError('CLIP 特征必须为 512 维数值')
+ vector=[float(v) for v in value]
+ if not all(math.isfinite(v) for v in vector):raise ValueError('CLIP 特征包含无效数值')
+ norm=math.hypot(*vector)
+ if not math.isfinite(norm) or norm<=1e-12:raise ValueError('CLIP 特征范数无效')
+ return [v/norm for v in vector]
+
 PROMPTS={
  'photo':['a photograph of a clothed adult person, a realistic human portrait','a fashion photograph of a person wearing clothing'],
  'detailed_illustration':['a detailed anime illustration of a clothed adult person','a detailed digital painting of a person wearing clothing'],
@@ -107,6 +119,31 @@ class LocalPortraitReviewer:
    except Exception as error:
     if self.process is not None and self.process.poll() is not None:self.prepared=False;self.error='本机图像检查进程已退出，请重新开始任务加载模型'
     return {'decision':'defer','reason':'自动图像检查失败：'+str(error)[:180]}
+ def embedding(self,record):
+  """Return source-bound CLIP features; these confer no portrait approval."""
+  from pool_avatars import avatar_file
+  with self.lock:
+   if not self.available():return None
+   try:
+    asset=record.get('avatarAsset') or {};source=record.get('avatarSource')
+    if not source or asset.get('source')!=source:return None
+    data,_=avatar_file(self.directory,record);digest=hashlib.sha256(data).hexdigest()
+    key='embedding:'+CLIP_EMBEDDING_VERSION+':'+digest
+    cached=self.cache.get(key)
+    if isinstance(cached,dict) and cached.get('sha256')==digest and cached.get('modelVersion')==CLIP_EMBEDDING_VERSION:
+     try:return {'embedding':normalized_embedding(cached.get('embedding')),'modelVersion':CLIP_EMBEDDING_VERSION,'sha256':digest}
+     except ValueError:pass
+    self.process.stdin.write(json.dumps({'mode':'embedding','image':base64.b64encode(data).decode()})+'\n');self.process.stdin.flush()
+    response=self._readline(self.config.get('inferenceTimeoutSeconds',90))
+    if response.get('modelVersion')!=CLIP_EMBEDDING_VERSION:return None
+    result={'embedding':normalized_embedding(response.get('embedding')),'modelVersion':CLIP_EMBEDDING_VERSION,'sha256':digest}
+    self.cache[key]=result
+    self.directory.mkdir(parents=True,exist_ok=True)
+    temp=self.cache_path.with_suffix('.tmp');temp.write_text(json.dumps(self.cache,ensure_ascii=False),encoding='utf-8');os.replace(temp,self.cache_path)
+    return result
+   except Exception:
+    if self.process is not None and self.process.poll() is not None:self.prepared=False;self.error='本机图像检查进程已退出，请重新开始任务加载模型'
+    return None
  def close(self):
   self.prepared=False
   if self.process:
@@ -136,17 +173,21 @@ def worker():
  for values in PROMPTS.values():
   vector=vectors[offset:offset+len(values)].mean(axis=0);means.append(vector/np.linalg.norm(vector));offset+=len(values)
  means=np.stack(means)
+ def image_embedding(image):
+  w,h=image.size;scale=224/min(w,h);resized=image.resize((round(w*scale),round(h*scale)),Image.Resampling.BICUBIC);left=(resized.width-224)//2;top=(resized.height-224)//2
+  clip=np.asarray(resized.crop((left,top,left+224,top+224)),dtype=np.float32)/255
+  clip=((clip-np.array([.48145466,.4578275,.40821073],dtype=np.float32))/np.array([.26862954,.26130258,.27577711],dtype=np.float32)).transpose(2,0,1)[None,...]
+  return embedding(vision,{vision.get_inputs()[0].name:clip},'image_embeds')[0]
  print(json.dumps({'ready':True}),flush=True)
  for line in sys.stdin:
   try:
    request=json.loads(line);image=ImageOps.exif_transpose(Image.open(io.BytesIO(base64.b64decode(request['image'],validate=True)))).convert('RGB')
+   if request.get('mode')=='embedding':
+    print(json.dumps({'embedding':normalized_embedding(image_embedding(image).tolist()),'modelVersion':CLIP_EMBEDDING_VERSION}),flush=True);continue
    safe=np.asarray(image.resize((224,224),Image.Resampling.BILINEAR),dtype=np.float32)/255
    safe=((safe-.5)/.5).transpose(2,0,1)[None,...]
    logits=safety.run(None,{safety.get_inputs()[0].name:safe})[0][0];p=np.exp(logits-logits.max());risk=float((p/p.sum())[1])
-   w,h=image.size;scale=224/min(w,h);resized=image.resize((round(w*scale),round(h*scale)),Image.Resampling.BICUBIC);left=(resized.width-224)//2;top=(resized.height-224)//2
-   clip=np.asarray(resized.crop((left,top,left+224,top+224)),dtype=np.float32)/255
-   clip=((clip-np.array([.48145466,.4578275,.40821073],dtype=np.float32))/np.array([.26862954,.26130258,.27577711],dtype=np.float32)).transpose(2,0,1)[None,...]
-   vector=embedding(vision,{vision.get_inputs()[0].name:clip},'image_embeds')[0];scores=dict(zip(PROMPTS,map(float,means@vector)))
+   vector=image_embedding(image);scores=dict(zip(PROMPTS,map(float,means@vector)))
    result=decide(risk,scores,request.get('config'))
   except Exception as error:result={'decision':'defer','reason':'本机推理失败：'+str(error)[:180]}
   print(json.dumps(result,ensure_ascii=False),flush=True)
