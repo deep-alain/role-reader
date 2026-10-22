@@ -1,0 +1,7 @@
+{
+  "autoPortraitReview": true,
+  "maximumNsfwRisk": 0.1,
+  "minimumPortraitSimilarity": 0.23,
+  "minimumStyleMargin": 0.02,
+  "inferenceTimeoutSeconds": 90
+}

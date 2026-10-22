@@ -94,5 +94,28 @@ class FeedbackMaintenanceTests(unittest.TestCase):
   with patch.object(self.pool.client,'read',return_value=updated):self.pool.refresh_definitions()
   self.assertEqual(self.pool.snapshot()['readyCount'],0);pending=self.pool.snapshot(include_pending=True)['portraitPending'][0]
   self.assertEqual(pending['avatarAsset']['review'],'pending');self.assertNotEqual(pending['avatarAsset']['sha256'],self.role['avatarAsset']['sha256']);self.assertEqual(self.pool.snapshot()['usedCount'],0)
+ def test_automatic_review_evidence_must_match_cached_image(self):
+  record=self.pool.state['ready'].pop();self.pool.state['portraitPending']=[record]
+  with self.assertRaises(ValueError):self.pool.review_portrait(record['id'],record['avatarAsset']['sha256'],'photo',evidence={'sha256':'wrong'})
+  self.assertEqual(self.pool.snapshot()['usedCount'],0);self.assertEqual(self.pool.snapshot()['readyCount'],0)
+ def test_background_review_uses_real_callback_evidence_without_consuming_stock(self):
+  record=self.pool.state['ready'].pop();record['avatarAsset']['review']='pending';self.pool.state['portraitPending']=[record]
+  class Reviewer:
+   def available(self):return True
+   def snapshot(self):return {'modelVersion':'test-model'}
+   def __call__(self,r):return {'decision':'accept','style':'photo','evidence':{'sha256':r['avatarAsset']['sha256'],'modelVersion':'test-model'}}
+  self.pool.portrait_reviewer=Reviewer();self.assertEqual(self.pool.auto_review_pending(),1)
+  saved=self.pool.get_record(record['id']);self.assertEqual(saved['avatarAsset']['autoReview']['modelVersion'],'test-model');self.assertEqual(self.pool.snapshot()['usedCount'],0)
+ def test_deferred_portrait_stays_visible_reviewable_and_persistent(self):
+  record=self.pool.state['ready'].pop();record['avatarAsset']['review']='pending';self.pool.state['portraitPending']=[record]
+  self.assertEqual(self.pool.defer_portraits([record['id']]),1);self.assertEqual(len(self.pool.state['portraitPending']),0)
+  self.assertEqual(self.pool.snapshot(include_pending=True)['portraitPendingCount'],1);self.assertEqual(self.pool.get_record(record['id'])['id'],record['id'])
+  self.pool.close();self.pool=PoolStore(self.temp.name,FakeCatalogue(),target=1,reserve_target=1,taste=TasteProfile(self.temp.name))
+  self.assertEqual(len(self.pool.state['portraitDeferred']),1)
+  self.pool.review_portrait(record['id'],record['avatarAsset']['sha256'],'photo');self.assertEqual(self.pool.snapshot()['readyCount'],1);self.assertEqual(self.pool.snapshot()['usedCount'],0)
+ def test_more_and_less_feedback_still_apply_to_quarantined_records(self):
+  record=self.pool.state['ready'].pop();record['avatarAsset']['review']='pending';self.pool.state['portraitPending']=[record];self.pool.defer_portraits([record['id']])
+  self.pool.feedback(record['id'],'more');self.assertEqual(self.pool.get_record(record['id'])['userPreference'],'more')
+  self.pool.feedback(record['id'],'less');self.assertEqual(self.pool.snapshot()['portraitDeferredCount'],0);self.assertEqual(self.pool.snapshot()['usedCount'],0)
 
 if __name__=='__main__':unittest.main()

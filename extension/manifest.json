@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "角色资料批量读取器",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "读取当前可见角色资料，批量处理链接及本地角色卡，导出 Excel、JSON 和头像。",
   "permissions": ["activeTab", "scripting", "storage"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],

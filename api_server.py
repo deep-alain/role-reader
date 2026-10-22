@@ -46,6 +46,11 @@ def fetch_public(url):
 
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*args,**kwargs):super().__init__(*args,directory=str(ROOT/'extension'),**kwargs)
+ def automation_snapshot(self):
+  jobs=self.server.automation;registry=jobs.registry
+  sources=[{'id':source,'mode':'full','fullDefinition':True} for source in registry.sources]
+  sources.extend({'id':source,'mode':'metadata','fullDefinition':False} for source in jobs.discovery_sources)
+  return {**jobs.snapshot(),'reviewer':self.server.reviewer.snapshot(),'sources':sources}
  def pool_snapshot(self,include_history=False,include_pending=False):
   snapshot=self.server.pool.snapshot(include_history,include_pending)
   if include_pending:snapshot['portraitPending']=rank_records(snapshot['portraitPending'])
@@ -59,14 +64,26 @@ class Handler(SimpleHTTPRequestHandler):
   host=self.headers.get('Host','').split(':')[0]
   if host not in ('127.0.0.1','localhost'):return self.json_reply({'error':'Localhost access only'},403)
   parsed=urllib.parse.urlsplit(self.path)
-  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.10.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
+  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.11.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool')})
+  if parsed.path=='/api/automation':return self.json_reply(self.automation_snapshot()) if hasattr(self.server,'automation') else self.json_reply({'error':'自动读取服务未启动'},503)
+  if parsed.path=='/api/automation/results':
+   if not hasattr(self.server,'automation'):return self.json_reply({'error':'自动读取服务未启动'},503)
+   with self.server.automation.lock:
+    job_id=self.server.automation.state.get('id');ids=self.server.automation.state.get('qualifiedIds',[])[:]
+   records=[]
+   for role_id in ids:
+    try:record=self.server.pool.get_record(role_id)
+    except KeyError:continue
+    if (record.get('avatarAsset') or {}).get('review')=='approved':records.append(record)
+   records=rank_records(records,self.server.rules.snapshot()['rules'] if hasattr(self.server,'rules') else None)
+   return self.json_reply({'jobId':job_id,'records':records,'count':len(records)})
   if parsed.path=='/api/rules':return self.json_reply(self.server.rules.snapshot()) if hasattr(self.server,'rules') else self.json_reply({'error':'规则服务未启动'},503)
   if parsed.path=='/api/pool':
    if not hasattr(self.server,'pool'):return self.json_reply({'error':'库存服务未启动'},503)
    query=urllib.parse.parse_qs(parsed.query);snapshot=self.pool_snapshot(query.get('history')==['1'],query.get('pending')==['1'])
    if query.get('since')==[str(snapshot['revision'])]:snapshot.pop('ready',None);snapshot.pop('history',None);snapshot.pop('portraitPending',None)
    return self.json_reply(snapshot)
-  if parsed.path=='/api/sources':return self.json_reply({'sources':CAPABILITIES,'enabledSources':list(getattr(getattr(self.server,'pool',None),'sources',[])),'selection':'成年故事型角色；原站分级单独展示','nsfwVerifiedSources':['crushon','spicychat'],'priority':'人物偏好优先，同档按来源真实热度排序','adapterConfiguration':'config/sources.json'})
+  if parsed.path=='/api/sources':return self.json_reply({'sources':CAPABILITIES,'enabledSources':list(getattr(getattr(self.server,'pool',None),'sources',[])),'selection':'成年故事型角色；原站分级单独展示','nsfwVerifiedSources':['chub','crushon','spicychat'],'priority':'人物偏好优先，同档按来源真实热度排序','adapterConfiguration':'config/sources.json'})
   if parsed.path=='/api/discovery':
    if self.headers.get('Origin') not in (None,f'http://{self.headers.get("Host")}') or self.headers.get('Sec-Fetch-Site')=='cross-site':return self.json_reply({'error':'Local same-origin requests only'},403)
    try:
@@ -109,6 +126,11 @@ class Handler(SimpleHTTPRequestHandler):
    if self.headers.get('Content-Type','').split(';')[0]!='application/json':return self.json_reply({'error':'Expected JSON'},415)
    body=json.loads(self.rfile.read(length));path=urllib.parse.urlsplit(self.path).path
    if not isinstance(body,dict):raise ValueError('Expected JSON object')
+   if path in ('/api/automation/start','/api/automation/cancel'):
+    if not hasattr(self.server,'automation'):return self.json_reply({'error':'自动读取服务未启动'},503)
+    if path.endswith('/start'):self.server.automation.start(body.get('maxRead',120),body.get('sources'))
+    else:self.server.automation.cancel()
+    return self.json_reply(self.automation_snapshot())
    if path=='/api/rules':
     result=self.server.rules.save(body);self.server.pool.touch_view();return self.json_reply({**result,'pool':self.pool_snapshot()})
    if path=='/api/pool/use':return self.json_reply({**self.server.pool.consume(body.get('id')),'pool':self.pool_snapshot()})
@@ -133,7 +155,7 @@ if __name__=='__main__':
   try:
    with urllib.request.urlopen(f'http://127.0.0.1:{args.port}/api/status',timeout=2) as existing:
     status=json.load(existing)
-   if status.get('roleReaderApi') and status.get('version')=='1.10.0':
+   if status.get('roleReaderApi') and status.get('version')=='1.11.0':
     url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader is already running: '+url,flush=True)
     if not args.no_browser:webbrowser.open(url)
     raise SystemExit(0)
@@ -144,6 +166,13 @@ if __name__=='__main__':
   from pool_store import PoolStore
   from taste_profile import TasteProfile
   server.pool=PoolStore(args.data_dir,SourceRegistry(fetch_public,ROOT/'config/sources.json'),taste=lambda:TasteProfile(args.data_dir,ROOT/'taste_examples.json'));server.pool.start()
+  from automation_jobs import AutomationJobs
+  from portrait_review import LocalPortraitReviewer
+  server.reviewer=LocalPortraitReviewer(args.data_dir)
+  if server.reviewer._files_ready():server.reviewer.prepare()
+  server.pool.portrait_reviewer=server.reviewer
+  server.discovery=PublicDiscovery()
+  server.automation=AutomationJobs(args.data_dir,server.pool,portrait_reviewer=server.reviewer,discovery=lambda source:server.discovery.search(source,'roommate' if source=='spicychat' else 'gothic',nsfw_only=True))
  else:
   from directory_lock import DirectoryLock
   server.data_lock=DirectoryLock(args.data_dir)
@@ -154,5 +183,7 @@ if __name__=='__main__':
  except KeyboardInterrupt:pass
  finally:
   server.server_close()
+  if hasattr(server,'automation'):server.automation.close()
+  if hasattr(server,'reviewer'):server.reviewer.close()
   if hasattr(server,'pool'):server.pool.close()
   if hasattr(server,'data_lock'):server.data_lock.close()
