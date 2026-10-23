@@ -3,7 +3,7 @@ import concurrent.futures,copy,hashlib,json,os,re,threading,time
 from pathlib import Path
 from pool_sources import FIELDS,SOURCES,normalize_record,now_iso
 from pool_policy import PROFILE_ID,PROFILE_LABEL,evaluate
-from pool_avatars import fetch_record_avatar,cache_avatar
+from pool_avatars import fetch_record_avatar,cache_avatar,avatar_file
 from duplicate_guard import duplicate_reason
 
 def fingerprint(record):
@@ -387,7 +387,12 @@ class PoolStore:
   return key not in self.seen_keys and key not in self.pending and not(failure and failure['retryAfter']>time.time())
  def sync_avatars(self):
   with self.lock:
-   records=[copy.deepcopy(r) for group in ('ready','reserve','portraitPending','portraitDeferred') for r in self.state.get(group,[]) if not r.get('avatarAsset') and r.get('avatarRetryAfter',0)<time.time()][:8]
+   candidates=[copy.deepcopy(r) for group in ('ready','reserve','portraitPending','portraitDeferred') for r in self.state.get(group,[]) if r.get('avatarRetryAfter',0)<time.time()]
+  records=[]
+  for record in candidates:
+   try:avatar_file(self.directory,record)
+   except (OSError,ValueError,KeyError):records.append(record)
+   if len(records)>=8:break
   def download(record):
    try:
     data,url=fetch_record_avatar(record);candidate={**record,'avatarSource':url}
@@ -397,10 +402,29 @@ class PoolStore:
    for original,asset,error in executor.map(download,records):
     with self.lock:
      for record in self.state['ready']+self.state['reserve']+self.state['history']+self.state.get('portraitPending',[])+self.state.get('portraitDeferred',[]):
-      if record['id']==original['id'] and record.get('avatarSource')==original.get('avatarSource'):
-       if asset:record['avatarAsset']=asset;record['avatarSource']=asset['source'];record.pop('avatarError',None)
+      if record['id']==original['id'] and record.get('avatarSource')==original.get('avatarSource') and record.get('avatarAsset')==original.get('avatarAsset'):
+       if asset:
+        record['avatarAsset']=asset;record['avatarSource']=asset['source'];record.pop('avatarError',None);record.pop('avatarRetryAfter',None)
        else:record['avatarError']=error;record['avatarRetryAfter']=time.time()+300
        self._save();break
+  if records and self.taste:self.apply_preferences()
+ def retry_avatar(self,record_id):
+  original=self.get_record(record_id)
+  try:
+   data,url=fetch_record_avatar(original)
+   candidate={**original,'avatarSource':url}
+   asset=cache_avatar(self.directory,candidate,data)
+  except (OSError,ValueError) as error:raise ValueError('来源头像读取失败：'+str(error)[:180]) from None
+  with self.lock:
+   for group in ('ready','reserve','history','portraitPending','portraitDeferred'):
+    for record in self.state.get(group,[]):
+     if record['id']!=record_id:continue
+     if record.get('avatarSource')!=original.get('avatarSource') or record.get('avatarAsset')!=original.get('avatarAsset'):raise ValueError('头像已更新，请刷新后重试')
+     record.update(avatarAsset=asset,avatarSource=url);record.pop('avatarError',None);record.pop('avatarRetryAfter',None)
+     self._save()
+     if self.taste:self.apply_preferences()
+     self.wake.set();return {'ok':True}
+   raise KeyError('未找到该 bot')
  def _next_candidate(self):
   with self.lock:
    offset=self.state['sourceTurn']%len(self.sources);self.state['sourceTurn']+=1

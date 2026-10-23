@@ -28,6 +28,26 @@ class AutomationApiTests(unittest.TestCase):
    time.sleep(.01)
   self.assertEqual(status['job']['id'],job_id);self.assertEqual(status['job']['read'],2);self.assertEqual(status['job']['accepted'],2)
   self.assertEqual(self.pool.snapshot()['usedCount'],0);self.assertEqual(len(status['sources']),3)
+ def test_avatar_retry_restores_preview_through_http_without_using_stock(self):
+  from unittest.mock import patch
+  from test_pool_avatars import PNG
+  from pathlib import Path
+  role=self.pool.client.read({'url':'https://example.org/avatar'});role['image']=PNG;self.pool.accept(role)
+  record=self.pool.snapshot()['ready'][0]
+  (Path(self.temp.name)/'avatars'/record['avatarAsset']['file']).unlink()
+  with patch('pool_store.fetch_record_avatar',return_value=(PNG,record['avatarSource'])):
+   result=self.request('/api/pool/avatar-retry',{'id':record['id']})
+  self.assertTrue(result['ok']);self.assertEqual(result['pool']['usedCount'],0)
+  with urllib.request.urlopen(self.url+'/api/pool/avatar?id='+record['id']+'&preview=1') as response:self.assertEqual(response.read(),PNG)
+ def test_avatar_retry_reports_network_failure_and_rejects_cross_origin(self):
+  from unittest.mock import patch
+  role=self.pool.client.read({'url':'https://example.org/avatar'});self.pool.accept(role)
+  record=self.pool.snapshot()['ready'][0]
+  with patch('pool_store.fetch_record_avatar',side_effect=OSError('network failure')) as fetch:
+   with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/pool/avatar-retry',{'id':record['id']})
+   self.assertEqual(error.exception.code,400)
+   with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/pool/avatar-retry',{'id':record['id']},'https://unrelated.example')
+   self.assertEqual(error.exception.code,403);self.assertEqual(fetch.call_count,1)
  def test_cross_origin_start_cannot_launch_a_job(self):
   with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/automation/start',{'maxRead':2},'https://unrelated.example')
   self.assertEqual(error.exception.code,403);self.assertEqual(self.server.automation.snapshot()['job']['status'],'idle')

@@ -1,4 +1,5 @@
 import tempfile,unittest,copy,base64
+from pathlib import Path
 from unittest.mock import patch
 from pool_avatars import validate_avatar_url,cache_avatar,avatar_file,fetch_record_avatar
 from pool_store import PoolStore
@@ -36,5 +37,35 @@ class AvatarTests(unittest.TestCase):
   self.store.accept(self.role)
   with patch('pool_store.fetch_record_avatar',return_value=(PNG,'https://botbooru.com/download/png/1')):self.store.sync_avatars()
   snap=self.store.snapshot();self.assertEqual(snap['readyCount'],1);self.assertEqual(snap['usedCount'],0);self.assertEqual(avatar_file(self.temp.name,snap['ready'][0])[0],PNG)
+ def test_background_repairs_a_missing_or_corrupt_cached_file(self):
+  self.role['image']=PNG;self.store.accept(self.role);r=self.store.snapshot()['ready'][0]
+  path=Path(self.temp.name)/'avatars'/r['avatarAsset']['file']
+  for missing in (True,False):
+   if missing:path.unlink()
+   else:path.write_bytes(b'corrupt')
+   with patch('pool_store.fetch_record_avatar',return_value=(PNG,r['avatarSource'])) as fetch:self.store.sync_avatars();fetch.assert_called_once()
+   self.assertEqual(avatar_file(self.temp.name,self.store.get_record(r['id']))[0],PNG)
+  self.assertEqual(self.store.snapshot()['usedCount'],0)
+ def test_manual_reread_preserves_approval_only_for_identical_source_bytes(self):
+  self.role['image']=PNG;self.store.accept(self.role);r=self.store.snapshot()['ready'][0]
+  self.store.review_avatar(r['id'],r['avatarAsset']['sha256'],True)
+  with patch('pool_store.fetch_record_avatar',return_value=(PNG,r['avatarSource'])):self.store.retry_avatar(r['id'])
+  self.assertEqual(self.store.get_record(r['id'])['avatarAsset']['review'],'approved')
+  with patch('pool_store.fetch_record_avatar',return_value=(PNG+b'changed',r['avatarSource'])):self.store.retry_avatar(r['id'])
+  self.assertEqual(self.store.get_record(r['id'])['avatarAsset']['review'],'pending')
+  self.assertEqual(self.store.snapshot()['usedCount'],0)
+ def test_failed_reread_keeps_existing_cached_image(self):
+  self.role['image']=PNG;self.store.accept(self.role);r=self.store.snapshot()['ready'][0]
+  with patch('pool_store.fetch_record_avatar',side_effect=OSError('network unavailable')):
+   with self.assertRaisesRegex(ValueError,'来源头像读取失败'):self.store.retry_avatar(r['id'])
+  self.assertEqual(avatar_file(self.temp.name,self.store.get_record(r['id']))[0],PNG)
+ def test_background_repair_does_not_overwrite_a_concurrent_review(self):
+  self.role['image']=PNG;self.store.accept(self.role);r=self.store.snapshot()['ready'][0]
+  (Path(self.temp.name)/'avatars'/r['avatarAsset']['file']).unlink()
+  def fetch(record):
+   self.store.review_avatar(r['id'],r['avatarAsset']['sha256'],True)
+   return PNG,r['avatarSource']
+  with patch('pool_store.fetch_record_avatar',side_effect=fetch):self.store.sync_avatars()
+  self.assertEqual(self.store.get_record(r['id'])['avatarAsset']['review'],'approved')
 
 if __name__=='__main__':unittest.main()

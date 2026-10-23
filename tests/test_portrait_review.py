@@ -44,5 +44,19 @@ class ReviewerTests(unittest.TestCase):
  def test_configuration_changes_invalidate_old_decisions(self):
   (self.root/'config').mkdir();(self.root/'config/automation.json').write_text(json.dumps({'maximumNsfwRisk':.005}))
   other=LocalPortraitReviewer(self.directory,self.root);self.assertNotEqual(other.signature,self.reviewer.signature);other.close()
+ def test_temporary_worker_failures_are_not_cached_as_image_decisions(self):
+  from unittest.mock import Mock
+  record={'id':'a'*24,'avatarSource':'https://botbooru.com/download/png/1'};record['avatarAsset']=cache_avatar(self.directory,record,PNG)
+  self.reviewer.prepared=True;self.reviewer.process=Mock();self.reviewer.process.poll.return_value=None
+  key=self.reviewer.signature+':'+record['avatarAsset']['sha256']
+  self.reviewer.cache[key]={'decision':'defer','reason':'old transient failure'}
+  with patch.object(self.reviewer,'_readline',return_value={'decision':'defer','reason':'worker failed'}) as read:
+   self.reviewer(record);self.reviewer(record)
+   self.assertEqual(read.call_count,2);self.assertNotIn(key,self.reviewer.cache)
+ def test_changed_source_cannot_reuse_cached_approval(self):
+  record={'id':'a'*24,'avatarSource':'https://botbooru.com/download/png/1'};record['avatarAsset']=cache_avatar(self.directory,record,PNG)
+  self.reviewer.cache[self.reviewer.signature+':'+record['avatarAsset']['sha256']]={'decision':'accept','style':'photo'}
+  self.reviewer.prepared=True;record['avatarSource']='https://botbooru.com/download/png/2'
+  self.assertEqual(self.reviewer(record)['decision'],'defer')
 
 if __name__=='__main__':unittest.main()

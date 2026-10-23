@@ -271,7 +271,7 @@ class TypeExclusionTests(unittest.TestCase):
         with patch('pool_store.fetch_record_avatar', return_value=(b'image', candidate['avatarSource'])) as fetch, \
                 patch('pool_store.cache_avatar', return_value=asset):
             self.pool.sync_avatars()
-        fetch.assert_called_once()
+        self.assertEqual(sum(call.args[0]['source'] == candidate['source'] for call in fetch.call_args_list), 1)
         restored = next(r for r in self.pool.state['portraitPending'] if r['source'] == candidate['source'])
         self.assertEqual(restored['avatarAsset']['sha256'], asset['sha256'])
         self.assertEqual(restored['avatarAsset']['review'], 'pending')

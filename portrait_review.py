@@ -106,15 +106,21 @@ class LocalPortraitReviewer:
   if not self.available():return {'decision':'defer','reason':self.snapshot()['note']}
   with self.lock:
    try:
+    if (record.get('avatarAsset') or {}).get('source')!=record.get('avatarSource'):raise ValueError('头像来源已改变，需重新读取')
     data,_=avatar_file(self.directory,record);digest=hashlib.sha256(data).hexdigest();key=self.signature+':'+digest
-    if key in self.cache:return self.cache[key]
+    if key in self.cache:
+     cached=self.cache[key]
+     if cached.get('evidence') or cached.get('decision') in ('accept','reject'):return cached
+     self.cache.pop(key,None)
     self.process.stdin.write(json.dumps({'image':base64.b64encode(data).decode(),'config':self.config})+'\n');self.process.stdin.flush()
     result=self._readline(self.config.get('inferenceTimeoutSeconds',90))
     if result.get('decision') not in ('accept','reject','defer'):raise ValueError('图像模型没有返回有效结果')
     if result.get('evidence'):
      result['evidence'].update(sha256=digest,modelVersion=self.signature,models={k:v['repo']+'@'+v['revision'] for k,v in MODELS.items()},checkedAt=time.time())
-    self.cache[key]=result
-    temp=self.cache_path.with_suffix('.tmp');temp.write_text(json.dumps(self.cache,ensure_ascii=False),encoding='utf-8');os.replace(temp,self.cache_path)
+    # Infrastructure failures carry no image evidence and must remain retryable.
+    if result.get('evidence') or result.get('decision') in ('accept','reject'):
+     self.cache[key]=result
+     temp=self.cache_path.with_suffix('.tmp');temp.write_text(json.dumps(self.cache,ensure_ascii=False),encoding='utf-8');os.replace(temp,self.cache_path)
     return result
    except Exception as error:
     if self.process is not None and self.process.poll() is not None:self.prepared=False;self.error='本机图像检查进程已退出，请重新开始任务加载模型'
