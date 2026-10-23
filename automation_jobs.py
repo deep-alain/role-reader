@@ -99,6 +99,8 @@ class AutomationJobs:
                     'page': page if type(page) is int and page > 0 else 1,
                     'queryPages': {key: value for key, value in pages.items()
                                    if isinstance(key, str) and type(value) is int and value > 0},
+                    'queryExhausted': {key: value for key, value in (cursor.get('queryExhausted') or {}).items()
+                                       if isinstance(key, str) and type(value) in (int, float) and value > time.time()},
                     'queue': copy.deepcopy([item for item in cursor.get('queue', [])
                                              if isinstance(item, dict) and isinstance(item.get('url'), str)][:100]),
                     'exhausted': False,
@@ -426,6 +428,8 @@ class AutomationJobs:
                     turn = self.state['queryTurn']
                     self.state['queryTurn'] += 1
                 query = taste.discovery_query(turn) if taste and supports else None
+                if query and cursor.setdefault('queryExhausted', {}).get(query, 0) > time.time():
+                    query = None
                 # Count a failed catalogue against the same bounded budget.
                 with self.lock:
                     page = cursor['queryPages'].get(query, 1) if query else cursor['page']
@@ -443,6 +447,11 @@ class AutomationJobs:
                     cursor['queue'] = sorted(({**v, 'source': source} for v in rows), key=lambda v: v.get('sourceRating') == 'NSFW', reverse=True)
                     if query:
                         cursor['queryPages'][query] = following or 1
+                        if not following:
+                            # Revisit completed searches for updates, not every click.
+                            cursor['queryExhausted'][query] = time.time() + 21600
+                        else:
+                            cursor['queryExhausted'].pop(query, None)
                     else:
                         cursor['page'] = following or page
                         cursor['exhausted'] = not bool(following)

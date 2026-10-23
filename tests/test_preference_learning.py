@@ -72,6 +72,19 @@ class FeedbackTests(unittest.TestCase):
   self.vote('one');self.assertIsNone(self.taste.discovery_query(0))
   self.vote('two');queries=[self.taste.discovery_query(i) for i in range(8)]
   self.assertEqual(queries[3],None);self.assertEqual(queries[7],None);self.assertEqual(sum(q=='goth' for q in queries),6)
+ def test_visual_query_respects_excluded_story_type_and_undo(self):
+  self.vote('photo1',style='photo',medium='photorealistic')
+  self.vote('photo2',style='photo',medium='photorealistic')
+  excluded=self.vote('romance','less',theme='恋人关系冲突')
+  self.assertNotIn('realistic girlfriend',self.taste.model()['queries'])
+  self.taste.feedback(excluded,'more')
+  self.assertIn('realistic girlfriend',self.taste.model()['queries'])
+ def test_query_exclusion_requires_the_entire_type_combination(self):
+  self.vote('photo1',style='photo',medium='photorealistic')
+  self.vote('photo2',style='photo',medium='photorealistic')
+  excluded=self.reviewed('combined',theme='恋人关系冲突')
+  excluded['toneMatches'].append('室友与同居');self.taste.feedback(excluded,'less')
+  self.assertIn('realistic girlfriend',self.taste.model()['queries'])
 
 class FakeCatalogue:
  sources=('chub',);supports_query_override=True
@@ -95,6 +108,19 @@ class ShelfFeedbackTests(unittest.TestCase):
   self.vote('seed1');self.vote('seed2')
   for _ in range(4):self.pool._catalogue('chub',7,20)
   self.assertEqual(self.client.calls,[('chub',1,'goth'),('chub',2,'goth'),('chub',3,'goth'),('chub',7,None)])
+ def test_completed_preference_search_falls_back_and_refreshes_after_cooldown(self):
+  self.vote('seed1');self.vote('seed2')
+  original=self.client.catalogue
+  def catalogue(source,page=1,limit=20,query=None):
+   result=original(source,page,limit,query)
+   if query:result['nextPage']=None
+   return result
+  self.client.catalogue=catalogue
+  self.pool._catalogue('chub',7,20);self.pool._catalogue('chub',7,20)
+  self.assertEqual(self.client.calls,[('chub',1,'goth'),('chub',7,None)])
+  self.pool.state['preferenceQueryExhausted']['chub|goth']=0
+  self.pool._catalogue('chub',8,20)
+  self.assertEqual(self.client.calls[-1],('chub',1,'goth'))
  def test_learned_photo_preference_does_not_override_the_requested_mix(self):
   self.vote('seed1',style='photo',medium='photorealistic');self.vote('seed2',style='photo',medium='photorealistic')
   self.pool.target=5;self.taste.set_realistic_target(20)

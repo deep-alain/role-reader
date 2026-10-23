@@ -5,6 +5,20 @@ from pool_store import PoolStore
 from test_pool_store import FakeCatalogue
 
 class MetricsTests(unittest.TestCase):
+ def test_explicit_search_stops_at_end_but_rotation_continues(self):
+  def fetch(url):return json.dumps({'data':{'nodes':[],'count':0}}).encode(),'application/json'
+  client=PublicCatalogue(fetch)
+  self.assertIsNone(client.catalogue('chub',1,20,query='goth')['nextPage'])
+  self.assertEqual(client.catalogue('chub',1,20)['nextPage'],2)
+ def test_explicit_pagination_uses_totals_and_a_stable_sort(self):
+  urls=[]
+  def fetch(url):
+   urls.append(url)
+   return json.dumps({'data':{'nodes':[{'fullPath':'a/card'}],'count':321}}).encode(),'application/json'
+  client=PublicCatalogue(fetch)
+  self.assertEqual(client.catalogue('chub',16,20,query='goth')['nextPage'],17)
+  self.assertIsNone(client.catalogue('chub',17,20,query='goth')['nextPage'])
+  self.assertEqual([urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)['sort'] for u in urls],[['n_favorites'],['n_favorites']])
  def test_downloads_are_not_likes_and_zero_is_not_missing(self):
   result=metrics('chub',{'starCount':77,'n_favorites':0,'nChats':8})
   self.assertEqual(result['downloads'],77);self.assertEqual(result['favorites'],0);self.assertNotIn('likes',result);self.assertNotIn('views',result);self.assertIsNone(result['messages'])

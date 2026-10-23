@@ -434,11 +434,16 @@ class PoolStore:
   with self.lock:
    turn=self.state.get('preferenceQueryTurn',0);self.state['preferenceQueryTurn']=turn+1
    query=self.taste.discovery_query(turn) if self.taste and supports else None
+   exhausted=self.state.setdefault('preferenceQueryExhausted',{})
+   if query and exhausted.get(source+'|'+query,0)>time.time():query=None
    pages=self.state.setdefault('preferenceQueryPages',{});key=source+'|'+str(query);query_page=pages.get(key,1)
   if not query:result=self.client.catalogue(source,page,limit)
   else:
    result=self.client.catalogue(source,query_page,limit,query=query)
-   with self.lock:pages[key]=result.get('nextPage') or 1
+   with self.lock:
+    pages[key]=result.get('nextPage') or 1
+    if not result.get('nextPage'):exhausted[key]=time.time()+21600
+    else:exhausted.pop(key,None)
    result={**result,'nextPage':page,'preferenceQuery':query}
   result['items']=sorted(result['items'],key=lambda item:item.get('sourceRating')=='NSFW',reverse=True)
   return result

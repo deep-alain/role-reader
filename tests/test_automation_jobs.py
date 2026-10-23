@@ -471,7 +471,35 @@ class AutomationJobTests(unittest.TestCase):
         saved = json.loads(controller.path.read_text(encoding='utf-8'))
         self.assertEqual(saved['cursors']['good']['page'], 1)
         self.assertEqual(saved['cursors']['good']['queryPages']['roommate'], 1)
+        self.assertGreater(saved['cursors']['good']['queryExhausted']['roommate'], time.time())
         self.assertEqual(job['read'], 3)
+
+    def test_completed_preference_query_is_skipped_after_restart(self):
+        class QueryRegistry(FakeRegistry):
+            def supports_query_override(self, source):
+                return True
+            def catalogue(self, source, page=1, limit=20, query=None):
+                self.queries.append(query)
+                return super().catalogue(source, page, limit)
+        class QueryTaste(Taste):
+            def discovery_query(self, turn):
+                return 'roommate'
+        client = QueryRegistry(2)
+        client.queries = []
+        pool = FakePool(client, target=10, taste=QueryTaste())
+        controller, _, _ = self.controller(client, pool)
+        controller.start(2)
+        self.wait_done(controller)
+        controller.close()
+        restored, _, _ = self.controller(client, pool)
+        restored.start(1)
+        self.wait_done(restored)
+        self.assertEqual(client.queries, ['roommate', None])
+        restored.state['cursors']['good']['queryExhausted']['roommate'] = 0
+        before = len(client.queries)
+        restored.start(1)
+        self.wait_done(restored)
+        self.assertEqual(client.queries[before], 'roommate')
 
     def test_real_shelf_acceptance_is_used_and_survives_restart(self):
         from pool_store import PoolStore

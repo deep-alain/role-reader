@@ -116,7 +116,11 @@ def build_model(feedback):
  for feature,value in sorted(stats.items(),key=lambda pair:pair[1]['score'],reverse=True):
   if value['more']<2 or value['score']<=0:continue
   query=QUERY_MAP.get(feature.removeprefix('theme:')) if feature.startswith('theme:') else 'realistic girlfriend' if feature=='medium:photorealistic' else 'model girlfriend' if feature=='style:glamour_portrait' else None
-  if query and query not in queries and not any(rule['features']==[feature] for rule in excluded.values()):queries.append(query)
+  # Visual preferences can map to a query whose story type was excluded.
+  # Apply the same AND rules to the query, without broadening any user's ban.
+  query_types=set(type_features({'name':query or ''}))
+  blocked=any(rule['features']==[feature] or set(rule['features']).issubset(query_types) for rule in excluded.values())
+  if query and query not in queries and not blocked:queries.append(query)
  return {'version':2,'uniqueExamples':learned,'stats':dict(stats),'queries':queries[:5],'blockedTypes':list(excluded.values())}
 
 def affinity(feature_list,model):

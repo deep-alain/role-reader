@@ -100,7 +100,7 @@ class PublicCatalogue:
   if query is not None and query not in QUERIES:raise ValueError('未知的偏好检索词')
   override=query is not None
   query=query or QUERIES[(page-1+SOURCES.index(source))%len(QUERIES)];cycle=(page-1)//len(QUERIES);query_page=page if override else cycle//2+1
-  sort={'chub':('n_favorites','download_count'),'botbooru':('views','favorites'),'charavault':('most_downloaded','top_rated')}[source][cycle%2]
+  sort={'chub':('n_favorites','download_count'),'botbooru':('views','favorites'),'charavault':('most_downloaded','top_rated')}[source][0 if override else cycle%2]
   if source=='chub':
    url='https://gateway.chub.ai/search?'+urllib.parse.urlencode({'search':query,'namespace':'characters','first':limit,'page':query_page,'sort':sort,'asc':'false','nsfw':'true' if self.include_nsfw else 'false','nsfl':'false','count':'true','include_forks':'true'})
    data=json.loads(self.fetch(url)[0]);nodes=data.get('data',{}).get('nodes');total=data.get('data',{}).get('count',0)
@@ -125,7 +125,11 @@ class PublicCatalogue:
    item.update(metadata(source,node,sort=sort,query=query,page=query_page,position=(query_page-1)*limit+nodes.index(node)+1))
   metric={'n_favorites':'favorites','download_count':'downloads','views':'views','favorites':'favorites','top_rated':'rating'}.get(sort)
   if metric:items=rank_items(items,metric)
-  return {'items':items,'nextPage':page+1 if page<1000 else 1}
+  # Rotating discovery must continue to other keywords after an empty result.
+  # An explicit keyword has its own finite page sequence and fixed sort order.
+  has_more=bool(nodes) and (query_page*limit<total if type(total) is int and total>0 else len(nodes)>=limit)
+  following=(page+1 if page<1000 else 1) if not override else page+1 if has_more and page<1000 else None
+  return {'items':items,'nextPage':following}
  def read(self,item):
   data,content_type=self.fetch(item['endpoint']);image=None
   if item['source']=='chub':r=chub_record(json.loads(data),item['url'],item['endpoint'])
