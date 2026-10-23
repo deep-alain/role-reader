@@ -89,6 +89,20 @@ class AutomationJobs:
                 return {**self.snapshot(), 'alreadyRunning': True}
             records = self._records()
             availability, reason = self._reviewer_availability()
+            previous = self.state
+            cursors = {}
+            for source in selected:
+                cursor = (previous.get('cursors') or {}).get(source) or {}
+                page = cursor.get('page', 1)
+                pages = cursor.get('queryPages') or {}
+                cursors[source] = {
+                    'page': page if type(page) is int and page > 0 else 1,
+                    'queryPages': {key: value for key, value in pages.items()
+                                   if isinstance(key, str) and type(value) is int and value > 0},
+                    'queue': copy.deepcopy([item for item in cursor.get('queue', [])
+                                             if isinstance(item, dict) and isinstance(item.get('url'), str)][:100]),
+                    'exhausted': False,
+                }
             self.cancel_event.clear()
             self.state = {
                 'version': 1, 'id': uuid.uuid4().hex, 'status': 'running', 'active': True,
@@ -101,8 +115,8 @@ class AutomationJobs:
                 'metadataFound': 0,
                 'perSource': {s: {'catalogues': 0, 'discovered': 0, 'read': 0,
                                     'readSucceeded': 0, 'accepted': 0, 'errors': 0, 'error': '', 'mode': 'full'} for s in selected},
-                'cursors': {s: {'page': 1, 'queryPages': {}, 'queue': [], 'exhausted': False} for s in selected},
-                'sourceTurn': 0, 'queryTurn': 0, 'reasonCounts': {},
+                'cursors': cursors,
+                'sourceTurn': previous.get('sourceTurn', 0), 'queryTurn': previous.get('queryTurn', 0), 'reasonCounts': {},
                 'reviewerAvailable': availability, 'reviewReason': reason,
                 'baselineIds': [r['id'] for group in records.values() for r in group],
                 'baselineReadyIds': [r['id'] for g in ('ready', 'reserve') for r in records[g]],

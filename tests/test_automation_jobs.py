@@ -168,6 +168,28 @@ class AutomationJobTests(unittest.TestCase):
         self.assertEqual(job['perSource']['bad']['read'], 0)
         self.assertEqual(job['perSource']['good']['read'], 2)
 
+    def test_next_batch_reads_unconsumed_queue_instead_of_fetching_the_first_page_again(self):
+        client = FakeRegistry(6)
+        controller, pool, _ = self.controller(client, FakePool(client, target=10))
+        controller.start(1)
+        self.wait_done(controller)
+        controller.start(1)
+        self.wait_done(controller)
+        self.assertEqual(client.catalogue_calls, [('good', 1)])
+        self.assertEqual(client.reads, ['0', '1'])
+        self.assertEqual(pool.state['history'], [])
+
+    def test_next_batch_continues_saved_paging_after_controller_restart(self):
+        client = FakeRegistry(6)
+        controller, pool, _ = self.controller(client, FakePool(client, target=10))
+        controller.start(2)
+        self.wait_done(controller)
+        controller.close()
+        restored, _, _ = self.controller(client, pool)
+        restored.start(1)
+        self.wait_done(restored)
+        self.assertEqual(client.catalogue_calls, [('good', 1), ('good', 2)])
+        self.assertEqual(client.reads, ['0', '1', '2'])
     def test_duplicate_start_and_cooperative_cancel_do_not_accept_late_response(self):
         client = FakeRegistry(5)
         client.release = threading.Event()
