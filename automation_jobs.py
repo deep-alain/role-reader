@@ -581,6 +581,20 @@ class AutomationJobs:
                             break
                 if self.cancel_event.wait(0.01):
                     break
+            # Finish reviewing existing candidates even when remote catalogues
+            # have ended or failed; networking must not strand local images.
+            while not self.cancel_event.is_set():
+                records = self._records()
+                if not self._has_unattempted_reviews(records):
+                    break
+                before = len(self.state['reviewAttempts'])
+                with self._collection_guard() as acquired:
+                    if not acquired:
+                        break
+                    self._review_pending()
+                    self._reconcile()
+                if len(self.state['reviewAttempts']) == before:
+                    break
             if self.cancel_event.is_set():
                 self._finish('cancelled', '已停止读取；已取得的资料和使用记录均已保留。')
             else:

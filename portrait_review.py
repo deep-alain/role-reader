@@ -32,17 +32,31 @@ def decide(risk,scores,config=None):
  """Cosine margins are relative model evidence, not safety probabilities."""
  import math
  config=config or {};ranked=sorted(scores.items(),key=lambda pair:pair[1],reverse=True)
+ automatic=config.get('uncertainPortraitAction')=='reject'
+ def uncertain(reason,evidence):return {'decision':'reject' if automatic else 'defer',**({'style':'other_rejected'} if automatic else {}),'reason':reason,'evidence':evidence}
  if not ranked or not math.isfinite(risk) or not 0<=risk<=1 or any(not math.isfinite(v) for _,v in ranked):return {'decision':'defer','reason':'图像模型输出无效'}
  label,score=ranked[0];style_margin=score-ranked[1][1] if len(ranked)>1 else 0
  opposite=[value for kind,value in ranked if (kind in ALLOWED)!=(label in ALLOWED)]
  margin=score-max(opposite) if opposite else 0
  evidence={'nsfwRisk':round(risk,5),'style':label,'similarity':round(score,5),'margin':round(margin,5),'styleMargin':round(style_margin,5),'scores':{k:round(v,5) for k,v in ranked},'thresholds':{'maximumNsfwRisk':config.get('maximumNsfwRisk',.10),'minimumPortraitSimilarity':config.get('minimumPortraitSimilarity',.23),'minimumStyleMargin':config.get('minimumStyleMargin',.025)}}
- if score<config.get('minimumPortraitSimilarity',.23) or margin<config.get('minimumStyleMargin',.025):return {'decision':'defer','reason':'人像或画风判断不清，保留待确认','evidence':evidence}
+ if score<config.get('minimumPortraitSimilarity',.23) or margin<config.get('minimumStyleMargin',.025):return uncertain('人像辨识不足，自动筛除' if automatic else '人像或画风判断不清，保留待确认',evidence)
  if label not in ALLOWED:return {'decision':'reject','style':'other_rejected' if label=='explicit' else label,'reason':'自动图像筛选未通过：'+label,'evidence':evidence}
- if risk>config.get('maximumNsfwRisk',.10):return {'decision':'defer','reason':'图像风险模型有疑虑，未自动放行','evidence':evidence}
+ if risk>config.get('maximumNsfwRisk',.10):return uncertain('图像风险检查未通过，自动筛除' if automatic else '图像风险模型有疑虑，未自动放行',evidence)
  medium={'photo':'photorealistic','detailed_illustration':'illustration','rendered_portrait':'rendered'}[label] if style_margin>=.015 else None
  if medium is None:label='portrait'
  return {'decision':'accept','style':label,'medium':medium,'reason':'本机模型人像与图像风险检查通过','evidence':evidence}
+
+def image_quality(image,config=None):
+ """Reject unreadably small, blank or extremely blurred originals."""
+ from PIL import ImageStat,ImageFilter
+ config=config or {};gray=image.convert('L');gray.thumbnail((256,256))
+ contrast=ImageStat.Stat(gray).stddev[0]
+ edges=gray.filter(ImageFilter.FIND_EDGES)
+ if min(edges.size)>4:edges=edges.crop((2,2,edges.width-2,edges.height-2))
+ energy=ImageStat.Stat(edges).mean[0]
+ evidence={'width':image.width,'height':image.height,'contrast':round(contrast,3),'edgeEnergy':round(energy,3)}
+ good=min(image.size)>=config.get('minimumImageSide',128) and contrast>=config.get('minimumImageContrast',5) and energy>=config.get('minimumImageEdgeEnergy',1.5)
+ return good,evidence
 
 class LocalPortraitReviewer:
  def __init__(self,directory,root=ROOT):
@@ -53,7 +67,7 @@ class LocalPortraitReviewer:
   if self.cache_path.exists():
    try:self.cache=json.loads(self.cache_path.read_text(encoding='utf-8'))
    except (ValueError,OSError):pass
-  signature={'version':2,'models':{k:v['revision'] for k,v in MODELS.items()},'config':self.config,'prompts':PROMPTS}
+  signature={'version':3,'models':{k:v['revision'] for k,v in MODELS.items()},'config':self.config,'prompts':PROMPTS}
   self.signature=hashlib.sha256(json.dumps(signature,sort_keys=True).encode()).hexdigest()
  def available(self):
   if self.prepared and self.process is not None and self.process.poll() is not None:self.prepared=False;self.error='本机图像检查进程已退出，请重新开始任务加载模型'
@@ -194,7 +208,10 @@ def worker():
    safe=((safe-.5)/.5).transpose(2,0,1)[None,...]
    logits=safety.run(None,{safety.get_inputs()[0].name:safe})[0][0];p=np.exp(logits-logits.max());risk=float((p/p.sum())[1])
    vector=image_embedding(image);scores=dict(zip(PROMPTS,map(float,means@vector)))
-   result=decide(risk,scores,request.get('config'))
+   config=request.get('config') or {};clear,quality=image_quality(image,config)
+   result=decide(risk,scores,config)
+   if not clear:result={'decision':'reject','style':'other_rejected','reason':'原图尺寸、清晰度或对比度不足','evidence':result.get('evidence',{})}
+   result.setdefault('evidence',{})['imageQuality']=quality
   except Exception as error:result={'decision':'defer','reason':'本机推理失败：'+str(error)[:180]}
   print(json.dumps(result,ensure_ascii=False),flush=True)
 

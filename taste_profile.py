@@ -12,8 +12,9 @@ LIMITS={'views':80,'messages':100,'chats':30,'downloads':20,'favorites':10,'like
 STYLE_LABELS={'portrait':'人物头像','photo':'真人 / 写实人像','detailed_illustration':'精细人物插画','rendered_portrait':'写实人物渲染','glamour_portrait':'成熟魅力人像','default_icon':'默认图标','no_person':'没有人物','faint_sketch':'过淡线稿','chibi_cartoon':'Q 版 / 简笔卡通','other_rejected':'不符合偏好'}
 
 class TasteProfile:
- def __init__(self,directory,seed=None):
-  self.path=Path(directory)/'taste_profile.json';self.lock=threading.RLock();self.state={'version':1,'feedback':{},'portraits':{},'targetRealisticPercent':0}
+ def __init__(self,directory,seed=None,default_realistic_percent=0):
+  if type(default_realistic_percent) is not int or not 0<=default_realistic_percent<=100:raise ValueError('写实目标比例必须是 0 至 100 的整数')
+  self.path=Path(directory)/'taste_profile.json';self.lock=threading.RLock();self.state={'version':1,'feedback':{},'portraits':{},'targetRealisticPercent':default_realistic_percent}
   if seed and Path(seed).exists():self.state.update(json.loads(Path(seed).read_text(encoding='utf-8')))
   if self.path.exists():
    saved=json.loads(self.path.read_text(encoding='utf-8'))

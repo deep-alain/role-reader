@@ -12,6 +12,12 @@ class FakeCatalogue:
   return {'record':card_to_record({'name':'Bot '+key,'age':28,'description':'A thoughtful adult roommate. '+('A patient, independent person with work, friends and clear boundaries. '*4)+key,'first_mes':'The evening rain has stopped. Your roommate sets a warm cup on the table and asks about your day. '+key,'scenario':'In a workshop.','tags':['Original','Adult','Roommate']},key,'https://example.org/a.png')}
 
 class ShelfTests(unittest.TestCase):
+ def test_gender_mix_prefers_women_until_target_then_men_without_inventing_gender(self):
+  self.client.target_female_percent=80
+  rows=[{'id':'f','gender':'Female'},{'id':'m','gender':'Male'},{'id':'u','gender':''}]
+  self.assertEqual(self.store._mix_candidates(rows,[],5),[rows[0]])
+  self.assertEqual(self.store._mix_candidates(rows,[rows[0]]*4,5),[rows[1]])
+  self.assertEqual(self.store._mix_candidates([rows[2]],[],5),[rows[2]])
  def setUp(self):self.temp=tempfile.TemporaryDirectory();self.client=FakeCatalogue();self.store=PoolStore(self.temp.name,self.client)
  def tearDown(self):self.store.close();self.temp.cleanup()
  def fill(self):

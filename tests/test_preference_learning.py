@@ -17,6 +17,12 @@ def role(key,theme='哥特与冷感反差',style='detailed_illustration',medium=
   'toneMatches':[theme],'sourceMetrics':{'views':views},'style':style,'medium':medium,'fieldSources':{}}
 
 class FeedbackTests(unittest.TestCase):
+ def test_new_user_realistic_default_does_not_override_saved_preferences(self):
+  with tempfile.TemporaryDirectory() as directory:
+   taste=TasteProfile(directory,default_realistic_percent=20)
+   self.assertEqual(taste.state['targetRealisticPercent'],20)
+   taste.set_realistic_target(35)
+   self.assertEqual(TasteProfile(directory,default_realistic_percent=20).state['targetRealisticPercent'],35)
  def setUp(self):self.temp=tempfile.TemporaryDirectory();self.taste=TasteProfile(self.temp.name)
  def tearDown(self):self.temp.cleanup()
  def reviewed(self,key,**kwargs):

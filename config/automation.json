@@ -2,6 +2,10 @@
   "autoPortraitReview": true,
   "maximumNsfwRisk": 0.1,
   "minimumPortraitSimilarity": 0.23,
-  "minimumStyleMargin": 0.02,
-  "inferenceTimeoutSeconds": 90
+  "minimumStyleMargin": 0.0,
+  "inferenceTimeoutSeconds": 90,
+  "uncertainPortraitAction": "reject",
+  "minimumImageSide": 128,
+  "minimumImageContrast": 5,
+  "minimumImageEdgeEnergy": 1.5
 }

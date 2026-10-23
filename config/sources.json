@@ -1,5 +1,14 @@
 {
-  "selection": {"targetNsfwPercent": 80, "includeNsfwCatalogue": true},
-  "builtinSources": ["chub", "botbooru", "charavault"],
+  "selection": {
+    "targetNsfwPercent": 80,
+    "includeNsfwCatalogue": true,
+    "targetFemalePercent": 80,
+    "targetRealisticPercent": 20
+  },
+  "builtinSources": [
+    "chub",
+    "botbooru",
+    "charavault"
+  ],
   "adapters": []
 }

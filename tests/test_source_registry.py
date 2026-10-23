@@ -3,6 +3,14 @@ from pathlib import Path
 from source_registry import SourceRegistry
 
 class RegistryTests(unittest.TestCase):
+ def test_female_mix_target_is_configurable_and_validated(self):
+  with tempfile.TemporaryDirectory() as folder:
+   p=Path(folder)/'sources.json'
+   p.write_text(json.dumps({'builtinSources':['chub'],'selection':{'targetFemalePercent':80}}))
+   self.assertEqual(SourceRegistry(None,p).target_female_percent,80)
+   for bad in (True,-1,101,'80'):
+    p.write_text(json.dumps({'builtinSources':['chub'],'selection':{'targetFemalePercent':bad}}))
+    with self.assertRaises(ValueError):SourceRegistry(None,p)
  def test_config_can_disable_or_reorder_builtin_sources(self):
   with tempfile.TemporaryDirectory() as folder:
    p=Path(folder)/'sources.json';p.write_text(json.dumps({'builtinSources':['botbooru','chub']}));registry=SourceRegistry(lambda *a:None,p)

@@ -106,6 +106,20 @@ class FeedbackMaintenanceTests(unittest.TestCase):
    def __call__(self,r):return {'decision':'accept','style':'photo','evidence':{'sha256':r['avatarAsset']['sha256'],'modelVersion':'test-model'}}
   self.pool.portrait_reviewer=Reviewer();self.assertEqual(self.pool.auto_review_pending(),1)
   saved=self.pool.get_record(record['id']);self.assertEqual(saved['avatarAsset']['autoReview']['modelVersion'],'test-model');self.assertEqual(self.pool.snapshot()['usedCount'],0)
+ def test_background_retries_failed_deferred_images_after_cooldown(self):
+  record=self.pool.state['ready'].pop();record['avatarAsset']['review']='pending';self.pool.state['portraitDeferred']=[record]
+  class Reviewer:
+   calls=0
+   def available(self):return True
+   def snapshot(self):return {'modelVersion':'retry-test'}
+   def __call__(self,r):
+    self.calls+=1
+    return {'decision':'defer','reason':'temporary failure'} if self.calls==1 else {'decision':'accept','style':'photo'}
+  reviewer=Reviewer();self.pool.portrait_reviewer=reviewer
+  self.pool.auto_review_pending();self.pool.auto_review_pending();self.assertEqual(reviewer.calls,1)
+  record['autoReviewRetryAfter']=0
+  self.assertEqual(self.pool.auto_review_pending(),1);self.assertEqual(reviewer.calls,2)
+  self.assertEqual(self.pool.snapshot()['usedCount'],0)
  def test_deferred_portrait_stays_visible_reviewable_and_persistent(self):
   record=self.pool.state['ready'].pop();record['avatarAsset']['review']='pending';self.pool.state['portraitPending']=[record]
   self.assertEqual(self.pool.defer_portraits([record['id']]),1);self.assertEqual(len(self.pool.state['portraitPending']),0)

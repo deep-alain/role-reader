@@ -118,6 +118,18 @@ class Taste:
 
 
 class AutomationJobTests(unittest.TestCase):
+    def test_catalogue_failure_does_not_strand_unreviewed_local_candidates(self):
+        class BrokenRegistry(FakeRegistry):
+            sources = ('bad',)
+        client = BrokenRegistry(0)
+        pool = FakePool(client, target=20, taste=Taste())
+        pool.state['portraitPending'] = [record('local-' + str(i)) for i in range(10)]
+        controller, _, _ = self.controller(client, pool, portrait_reviewer=lambda r: {'decision': 'accept', 'style': 'photo'})
+        controller.start(1)
+        job = self.wait_done(controller)
+        self.assertEqual(job['reviewed'], 10)
+        self.assertEqual(len(pool.state['ready']), 10)
+        self.assertEqual(pool.state['history'], [])
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.controllers = []

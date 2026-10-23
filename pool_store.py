@@ -239,6 +239,11 @@ class PoolStore:
    want=sum(self.taste.is_realistic(r) for r in stock)<self.taste.realistic_target(total)
    matching=[r for r in candidates if self.taste.is_realistic(r)==want]
    if matching:candidates=matching
+  female_percent=getattr(self.client,'target_female_percent',0)
+  if female_percent:
+   want=sum(r.get('gender')=='Female' for r in stock)<(total*female_percent+50)//100
+   matching=[r for r in candidates if r.get('gender')==('Female' if want else 'Male')]
+   if matching:candidates=matching
   return candidates
  def snapshot(self,include_history=False,include_pending=False):
   with self.lock:
@@ -516,7 +521,7 @@ class PoolStore:
   if reviewer is None or not reviewer.available():return 0
   version=reviewer.snapshot()['modelVersion'];reviewed=0
   with self.lock:
-   records=[copy.deepcopy(r) for r in self.state.get('portraitPending',[]) if (r.get('avatarAsset') or {}).get('sha256') and (r.get('avatarAsset') or {}).get('review')!='approved' and r.get('autoReviewAttempt')!={'version':version,'sha256':(r.get('avatarAsset') or {}).get('sha256')}][:limit]
+   records=[copy.deepcopy(r) for g in ('portraitPending','portraitDeferred') for r in self.state.get(g,[]) if (r.get('avatarAsset') or {}).get('sha256') and (r.get('avatarAsset') or {}).get('review')!='approved' and (r.get('autoReviewAttempt')!={'version':version,'sha256':(r.get('avatarAsset') or {}).get('sha256')} or r.get('autoReviewRetryAfter',0)<=time.time())][:limit]
   for record in records:
    if self.stop_event.is_set():break
    result=reviewer(record);digest=(record.get('avatarAsset') or {}).get('sha256')
@@ -525,9 +530,9 @@ class PoolStore:
     except (ValueError,KeyError):pass
    else:
     with self.lock:
-     for current in self.state.get('portraitPending',[]):
+     for current in self.state.get('portraitPending',[])+self.state.get('portraitDeferred',[]):
       if current['id']==record['id'] and (current.get('avatarAsset') or {}).get('sha256')==digest:
-       current['autoReviewAttempt']={'version':version,'sha256':digest};current['pendingReason']=result.get('reason','图像判断不清');self._save();break
+       current['autoReviewAttempt']={'version':version,'sha256':digest};current['autoReviewRetryAfter']=time.time()+60;current['pendingReason']=result.get('reason','图像判断不清');self._save();break
     self.defer_portraits([record['id']],result.get('reason','图像判断不清'))
   return reviewed
  def refresh_definitions(self,limit=2,interval=21600):

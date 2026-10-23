@@ -1,7 +1,7 @@
 import copy,hashlib,json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-from portrait_review import decide,LocalPortraitReviewer,PROMPTS
+from portrait_review import decide,LocalPortraitReviewer,PROMPTS,image_quality
 from test_pool_avatars import PNG
 from pool_avatars import cache_avatar
 
@@ -24,6 +24,21 @@ class PortraitDecisionTests(unittest.TestCase):
  def test_confusion_between_valid_portrait_styles_does_not_block_a_clear_person(self):
   scores=self.scores();scores['rendered_portrait']=.359
   result=decide(.01,scores);self.assertEqual(result['decision'],'accept');self.assertEqual(result['style'],'portrait');self.assertIsNone(result['medium'])
+ def test_automatic_mode_has_final_decisions_for_valid_image_evidence(self):
+  config={'uncertainPortraitAction':'reject','minimumStyleMargin':0.0}
+  self.assertEqual(decide(.01,self.scores(gap=.001),config)['decision'],'accept')
+  self.assertEqual(decide(.8,self.scores(),config)['decision'],'reject')
+  self.assertEqual(decide(.01,{k:.1 for k in PROMPTS},config)['decision'],'reject')
+  self.assertEqual(decide(.01,self.scores('explicit'),config)['decision'],'reject')
+  self.assertEqual(decide(float('nan'),self.scores(),config)['decision'],'defer')
+ def test_image_quality_rejects_blank_tiny_and_heavily_blurred_originals(self):
+  from PIL import Image,ImageFilter,ImageDraw
+  image=Image.new('RGB',(256,256),'white');draw=ImageDraw.Draw(image)
+  for x in range(0,256,16):draw.rectangle((x,0,x+7,255),fill='black')
+  self.assertTrue(image_quality(image)[0])
+  self.assertFalse(image_quality(Image.new('RGB',(256,256),'white'))[0])
+  self.assertFalse(image_quality(image.resize((32,32)))[0])
+  self.assertFalse(image_quality(image.filter(ImageFilter.GaussianBlur(30)))[0])
 
 class ReviewerTests(unittest.TestCase):
  def setUp(self):

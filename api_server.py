@@ -64,7 +64,7 @@ class Handler(SimpleHTTPRequestHandler):
   host=self.headers.get('Host','').split(':')[0]
   if host not in ('127.0.0.1','localhost'):return self.json_reply({'error':'Localhost access only'},403)
   parsed=urllib.parse.urlsplit(self.path)
-  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.12.3','sources':list(ALLOWED),'pool':hasattr(self.server,'pool'),'feedbackTypeExclusions':True,'coverFeedback':True})
+  if parsed.path=='/api/status':return self.json_reply({'roleReaderApi':True,'version':'1.13.0','sources':list(ALLOWED),'pool':hasattr(self.server,'pool'),'feedbackTypeExclusions':True,'coverFeedback':True})
   if parsed.path=='/api/automation':return self.json_reply(self.automation_snapshot()) if hasattr(self.server,'automation') else self.json_reply({'error':'自动读取服务未启动'},503)
   if parsed.path=='/api/automation/results':
    if not hasattr(self.server,'automation'):return self.json_reply({'error':'自动读取服务未启动'},503)
@@ -162,7 +162,7 @@ if __name__=='__main__':
   try:
    with urllib.request.urlopen(f'http://127.0.0.1:{args.port}/api/status',timeout=2) as existing:
     status=json.load(existing)
-   if status.get('roleReaderApi') and status.get('version')=='1.12.3':
+   if status.get('roleReaderApi') and status.get('version')=='1.13.0':
     url=f'http://127.0.0.1:{args.port}/app.html';print('Role Reader is already running: '+url,flush=True)
     if not args.no_browser:webbrowser.open(url)
     raise SystemExit(0)
@@ -172,7 +172,8 @@ if __name__=='__main__':
   from source_registry import SourceRegistry
   from pool_store import PoolStore
   from taste_profile import TasteProfile
-  server.pool=PoolStore(args.data_dir,SourceRegistry(fetch_public,ROOT/'config/sources.json'),taste=lambda:TasteProfile(args.data_dir,ROOT/'taste_examples.json'));server.pool.start()
+  registry=SourceRegistry(fetch_public,ROOT/'config/sources.json')
+  server.pool=PoolStore(args.data_dir,registry,taste=lambda:TasteProfile(args.data_dir,ROOT/'taste_examples.json',default_realistic_percent=registry.target_realistic_percent));server.pool.start()
   from automation_jobs import AutomationJobs
   from portrait_review import LocalPortraitReviewer
   server.reviewer=LocalPortraitReviewer(args.data_dir)
