@@ -25,6 +25,18 @@ test('releasing the mouse keeps the selected text intact until selection clears'
  h.gate.request();h.run();assert.equal(h.renders,0);
  h.select(false);fire(h.document,'selectionchange');h.run();assert.equal(h.renders,1);
 });
+test('explicit mutations refresh immediately even with a persistent selection',()=>{
+ const h=harness();h.select(true);h.gate.request();h.run();assert.equal(h.renders,0);
+ h.gate.request({immediate:true});assert.equal(h.renders,1);
+ h.run();assert.equal(h.renders,1);
+ h.gate.request();h.run();assert.equal(h.renders,1);
+ h.select(false);fire(h.document,'selectionchange');h.run();assert.equal(h.renders,2);
+});
+test('an open row menu holds background updates until it closes',()=>{
+ const h=harness();let open=true;h.document.querySelector=selector=>selector.includes('details.record-more[open]')&&open?{}:null;
+ h.gate.request();h.run();assert.equal(h.renders,0);
+ open=false;fire(h.document,'toggle');h.run();assert.equal(h.renders,1);
+});
 test('keyboard selections in textareas also defer background rendering',()=>{
  const h=harness();h.document.activeElement={selectionStart:4,selectionEnd:100};
  h.gate.request();h.run();assert.equal(h.renders,0);

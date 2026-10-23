@@ -19,7 +19,7 @@ export function selectionSafeRefresh({document,window,render,schedule=callback=>
  let dragging=false,pending=false,scheduled=false,disposed=false;
  const listeners=[];
  function blocked(){
-  if(dragging||document.querySelector('dialog[open]'))return true;
+  if(dragging||document.querySelector('dialog[open], details.record-more[open]'))return true;
   if(document.getSelection()?.isCollapsed===false)return true;
   const input=document.activeElement;
   return typeof input?.selectionStart==='number'&&input.selectionEnd>input.selectionStart;
@@ -30,6 +30,6 @@ export function selectionSafeRefresh({document,window,render,schedule=callback=>
  listen(document,'pointerdown',event=>{if(event.button===0&&event.isPrimary!==false)dragging=true});
  for(const type of ['pointerup','pointercancel','blur'])listen(window,type,()=>{dragging=false;wake()});
  listen(window,'focus',wake);
- for(const type of ['selectionchange','keyup','input','focusout','close'])listen(document,type,wake);
- return {request(){pending=true;wake()},dispose(){disposed=true;for(const remove of listeners)remove()}};
+ for(const type of ['selectionchange','keyup','input','focusout','close','toggle'])listen(document,type,wake);
+ return {request({immediate=false}={}){pending=true;if(immediate&&!disposed){pending=false;render()}else wake()},dispose(){disposed=true;for(const remove of listeners)remove()}};
 }

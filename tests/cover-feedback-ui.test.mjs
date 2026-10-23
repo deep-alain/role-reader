@@ -51,6 +51,8 @@ test('pool refresh keeps feedback undo without recreating the removed explanatio
  vm.runInContext(helpers+source.slice(source.indexOf('function applyPool('),source.indexOf('async function poolRequest(')),context);
  context.applyPool({revision:1,preferences:{explanation:'当前偏好',learning:{uniqueExamples:0,blockedTypes:[]},cover:{enabled:true,count:4,references:names.map((name,index)=>({name,sha256:String(index)}))}},ready:[],readyCount:50,reserveCount:5,usedCount:6,status:'已就绪',lastFeedback:{id:'story-vote'}});
  assert.equal(elements.has('preferenceSummary'),false);assert.equal(context.lastFeedback,'story-vote');assert.equal(elements.get('undoFeedback').hidden,false);
+ context.applyPool({revision:2,preferences:{learning:{blockedTypes:[]}},readyCount:50});
+ assert.equal(context.lastFeedback,null);assert.equal(elements.get('undoFeedback').hidden,true);
 });
 
 test('cover match annotation names the reference without turning a cosine into a percentage',()=>{

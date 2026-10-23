@@ -9,7 +9,7 @@ const sessionPort=extended?chrome.runtime.connect({name:'role-reader-session'}):
 if(sessionPort)setInterval(()=>{try{sessionPort.postMessage({type:'keepalive'})}catch{}},20000);
 let records=[],running=false,stopped=false,editId=null,localApi=false,jobController=null,sourceTab=Number(new URLSearchParams(location.search).get('sourceTab'))||null;
 let libraryView='manual',poolAvailable=false,poolState=null,poolPolling=false,editLibrary='manual';
-const consuming=new Set(),coverSubmitting=new Set(),poolRequests=requestGate(),viewRevisions={};
+const consuming=new Set(),feedbackSubmitting=new Set(),coverSubmitting=new Set(),poolRequests=requestGate(),viewRevisions={};
 let lastFeedback=null;
 let automation=null,automationActive=false,automationBusy=false,batchRecords=[],batchStamp='',batchRequest=0;
 const poolRefreshView=selectionSafeRefresh({document,window,render});
@@ -75,7 +75,7 @@ function render(){
  const visible=currentVisible();
  $('export').disabled=!visible.length||running;$('export').textContent='导出当前列表（'+visible.length+'）';
  $('empty').hidden=visible.length>0;$('empty').querySelector('strong').textContent=listed.length?'没有符合筛选条件的角色':libraryView==='pool'?(poolState?.readyCount?'没有符合热度门槛的角色，库存仍保留':'正在自动读取新 bot，请稍候'):'角色资料会显示在这里';
- reconcileRows($('rows'),visible,{key:r=>r.id,version:r=>JSON.stringify([libraryView,supportsTypeExclusion(),coverFeedbackState(r),consuming.has(r.id),avatarUrl(r),...['name','category','gender','age','status','missing','error','toneMatches','usedAt','source','method','avatarVisibility','avatarError','pendingReason','sourceMetrics','sourceRating','metricsAt','ranking','preferenceReason','userPreference','coverPreference'].map(key=>r[key])]),create:r=>{const tr=element('tr'),nameCell=element('td'),person=element('div','person'),icon=element('span','avatar-placeholder',r.name?.slice(0,1)||'?'),nameBox=element('div');
+ reconcileRows($('rows'),visible,{key:r=>r.id,version:r=>JSON.stringify([libraryView,supportsTypeExclusion(),coverFeedbackState(r),consuming.has(r.id),feedbackSubmitting.has(r.id),avatarUrl(r),...['name','category','gender','age','status','missing','error','toneMatches','usedAt','source','method','avatarVisibility','avatarError','pendingReason','sourceMetrics','sourceRating','metricsAt','ranking','preferenceReason','userPreference','coverPreference'].map(key=>r[key])]),create:r=>{const tr=element('tr'),nameCell=element('td'),person=element('div','person'),icon=element('span','avatar-placeholder',r.name?.slice(0,1)||'?'),nameBox=element('div');
  const avatar=avatarUrl(r);if(avatar){const img=element('img','record-avatar');img.src=avatar;img.alt=r.avatarVisibility==='covered'?'头像待检查':r.name+'的来源头像';img.loading='lazy';img.referrerPolicy='no-referrer';img.title='点击查看角色和大图';img.onclick=()=>openEditor(r.id);img.onerror=()=>{const failed=element('span','avatar-placeholder','图片加载失败');failed.title=r.avatarError||'来源头像暂时不可用';img.replaceWith(failed)};person.append(img)}else person.append(icon);
  nameBox.append(element('strong','',r.name||'未读取到名称'),element('small','',['used','batch'].includes(libraryView)&&r.usedAt?'已使用 · '+new Date(r.usedAt).toLocaleString('zh-CN'):r.toneMatches?.join(' · ')||r.id.slice(0,8)));person.append(nameBox);nameCell.append(person);tr.append(nameCell);
  const metrics=r.sourceMetrics||{},labels={views:'浏览',favorites:'收藏',downloads:'下载',chats:'聊天',messages:'消息',rating:'评分'};const metricText=Object.entries(labels).filter(([key])=>typeof metrics[key]==='number').map(([key,label])=>label+' '+metrics[key].toLocaleString('zh-CN')).join(' · ');const heat=element('small','source-metrics',metricText||'热度数据未提供');heat.title=(r.metricsAt?'来源数据时间：'+new Date(r.metricsAt).toLocaleString('zh-CN')+'。':'')+'未提供的指标保持未知，收藏不等同点赞。';nameBox.append(heat,element('small','source-rating','原站 '+(r.sourceRating&&r.sourceRating!=='unknown'?r.sourceRating:'分级未知')));if(r.ranking){const basis={views:'浏览',messages:'消息',chats:'聊天',downloads:'下载',favorites:'收藏',likes:'点赞',unknown:'未提供计数'};nameBox.append(element('small','ranking-basis',(r.ranking.ageStatus==='verified'?'成年已确认':'年龄待核验')+' · '+basis[r.ranking.heatBasis]+(r.ranking.heatValue!=null?'排序 · 来源本批第 '+r.ranking.sourcePosition+' / '+r.ranking.sourceBatchSize:'，不当作热门')))}
@@ -85,9 +85,26 @@ function render(){
  for(const key of ['category','gender','age']){const cell=element('td',key==='category'?'category-cell':'',text(r[key])||'—');cell.title=text(r[key]);tr.append(cell)}
  const status=element('td'),pill=element('span','pill '+(r.status==='complete'?'good':r.status==='failed'?'bad':''),r.status==='complete'?'9 / 9 字段':r.status==='failed'?'读取失败':`${9-r.missing.length} / 9 字段`);pill.title=r.error||'缺少：'+r.missing.join('、');status.append(pill);tr.append(status);
  const src=element('td','source');if(safeUrl(r.source)){const a=element('a','',new URL(r.source).hostname);a.href=r.source;a.target='_blank';a.rel='noopener noreferrer';a.title=r.source;src.append(a)}else src.textContent=r.source||r.method;tr.append(src);
- const controls=element('td'),actions=element('div','record-actions'),button=element('button','quiet',libraryView==='batch'?'查看资料':'查看 / 编辑');button.onclick=()=>openEditor(r.id);actions.append(button);if(libraryView==='pool'){const use=element('button','use-button',consuming.has(r.id)?'正在替换…':'已使用 · 换新');use.disabled=consuming.has(r.id);use.onclick=()=>consumeBot(r.id);actions.append(use)}if(['pool','batch'].includes(libraryView)){for(const[choice,label]of [['more',r.userPreference==='more'?'多来 ✓':'多来'],['less','不要此类'],...(r.userPreference==='more'?[['clear','撤销多来']]:[])]){const feedback=element('button','quiet',label);if(choice==='less'){feedback.disabled=!supportsTypeExclusion();feedback.title=feedback.disabled?'服务尚未更新，请重启工具后启用类型排除。':'排除此类题材组合或已核验不合适画风；后续读取与补货不再推荐，可撤销。'}feedback.onclick=()=>feedbackBot(r.id,choice);actions.append(feedback)}const coverState=coverFeedbackState(r),cover=element('button','quiet',coverState.label);cover.disabled=coverState.disabled;cover.title=coverState.title;cover.onclick=()=>coverFeedbackBot(r.id,coverState.choice);actions.append(cover)}controls.append(actions);tr.append(controls);return tr;
+ const controls=element('td'),actions=recordActions(r,libraryView);controls.append(actions);tr.append(controls);return tr;
  }});
 }
+function recordActions(record,view){
+ const actions=element('div','record-actions'),show=element('button','quiet','查看');show.onclick=()=>openEditor(record.id);actions.append(show);
+ if(view==='pool'){const use=element('button','use-button',consuming.has(record.id)?'处理中…':'已使用');use.title='标记已使用并自动补新';use.disabled=consuming.has(record.id);use.onclick=()=>consumeBot(record.id);actions.append(use)}
+ if(['pool','batch'].includes(view)){
+  const menu=element('details','record-more'),summary=element('summary','','更多'),items=element('div','record-menu');menu.append(summary,items);
+  menu.ontoggle=()=>{if(menu.open)for(const other of document.querySelectorAll('details.record-more[open]'))if(other!==menu)other.open=false};
+  const busy=feedbackSubmitting.has(record.id);
+  for(const[choice,label]of [['more',record.userPreference==='more'?'撤销多来':'多来'],['less',busy?'处理中…':'不要此类']]){
+   const button=element('button','quiet',label);button.disabled=busy||(choice==='less'&&!supportsTypeExclusion());button.title=choice==='less'?'排除此类，可撤销':'';
+   button.onclick=()=>{menu.open=false;feedbackBot(record.id,choice==='more'&&record.userPreference==='more'?'clear':choice)};items.append(button);
+  }
+  const state=coverFeedbackState(record),cover=element('button','quiet',state.label);cover.disabled=state.disabled;cover.title=state.title;cover.onclick=()=>{menu.open=false;coverFeedbackBot(record.id,state.choice)};items.append(cover);actions.append(menu);
+ }
+ return actions;
+}
+let actionNoticeTimer;
+function actionNotice(text){message(text);const toast=$('actionToast');if(!toast)return;toast.textContent=text;toast.hidden=false;clearTimeout(actionNoticeTimer);actionNoticeTimer=setTimeout(()=>{toast.hidden=true},4500)}
 function portraitStatus(record){
  if(record.avatarError)return '头像读取失败，可重新读取';
  if(!record.avatarAsset)return '头像尚未缓存';
@@ -111,12 +128,12 @@ function applyPool(next,fromPoll=false){
  if(!fromPoll){poolRequests.invalidate();poolPolling=false;}
  if(poolState&&next.revision<poolState.revision)return;
  const changed=!poolState||next.revision!==poolState.revision||!!next.ready||!!next.history;
- poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);
+ poolState={...poolState,...next};if(next.preferences&&!Object.hasOwn(next,'lastFeedback'))delete poolState.lastFeedback;if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);
  $('poolReady').textContent=poolState.readyCount;$('poolReserve').textContent=poolState.reserveCount;$('poolUsed').textContent=poolState.usedCount;
  lastFeedback=poolState.lastFeedback?.id||null;$('undoFeedback').hidden=!lastFeedback;
  $('poolStatus').textContent=poolState.status+(poolState.readyCount<50?'；剩余 '+(50-poolState.readyCount)+' 个正在补货':'')+(typeof poolState.matchingCount==='number'&&poolState.matchingCount<poolState.readyCount?'；门槛筛选显示 '+poolState.matchingCount+' / '+poolState.readyCount+' 个，库存保留':'');
  $('poolErrors').textContent=Object.entries(poolState.sourceErrors||{}).map(([source,detail])=>(API_SOURCES[source]?.label||source)+' 暂时不可用：'+detail.error).join('；');
- if(changed)poolRefreshView.request();
+ if(changed)poolRefreshView.request({immediate:!fromPoll});
 }
 async function poolRequest(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const value=await response.json();if(!response.ok)throw new Error(value.error||'库存操作失败');return value;}
 async function refreshPool(force=false){
@@ -134,7 +151,18 @@ async function refreshPool(force=false){
 }
 async function consumeBot(id){if(consuming.has(id))return;consuming.add(id);render();try{const result=await poolRequest('/api/pool/use',{id});applyPool(result.pool);message(result.alreadyUsed?'此 bot 已归档，没有重复消耗库存。':result.replacementId?'已归档使用记录，新 bot 已补位。':'已归档，正在从接口读取新 bot 补位。')}catch(e){message('标记失败：'+e.message)}finally{consuming.delete(id);render()}}
 async function setLibraryView(view){poolRequests.invalidate();poolPolling=false;libraryView=view;$('filter').value='all';$('search').value='';render();if(view==='batch')return refreshBatchResults();if(view!=='manual')await refreshPool(true)}
-async function feedbackBot(id,choice){if(choice==='less'&&!supportsTypeExclusion())return message('服务尚未更新，请重启工具后启用类型排除；此次没有提交“不要”。');try{const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);if(libraryView==='batch')await refreshBatchResults();lastFeedback=choice==='clear'?null:id;$('undoFeedback').hidden=!lastFeedback;message(choice==='clear'?'已撤销偏好':choice==='less'?'已排除此类':'已保存偏好')}catch(error){message(error.message)}}
+async function feedbackBot(id,choice){
+ if(feedbackSubmitting.has(id))return;
+ if(choice==='less'&&!supportsTypeExclusion())return actionNotice('请重启工具后启用类型排除，此次未提交');
+ feedbackSubmitting.add(id);poolRefreshView.request({immediate:true});actionNotice('正在保存…');
+ try{
+  const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);
+  if(libraryView==='batch')await refreshBatchResults();
+  // Ignore an older response when another completed vote has a newer revision.
+  if(result.pool.revision==null||result.pool.revision>=poolState.revision){lastFeedback=result.pool.lastFeedback?.id||(choice==='clear'?null:id);$('undoFeedback').hidden=!lastFeedback;}
+  actionNotice(choice==='clear'?'已撤销偏好':choice==='less'?'已排除此类':'已保存偏好');
+ }catch(error){actionNotice('保存失败：'+error.message)}finally{feedbackSubmitting.delete(id);poolRefreshView.request({immediate:true})}
+}
 async function coverFeedbackBot(id,choice){
  if(!supportsCoverFeedback())return message('服务尚未更新，封面偏好尚未生效；请重启工具后使用。此次没有提交。');
  const record=displayedRecords().find(value=>value.id===id);if(!record||record.avatarAsset?.review!=='approved')return message('请先检查并通过来源头像，再添加封面参考。此次没有提交。');

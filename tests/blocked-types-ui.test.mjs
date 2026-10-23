@@ -4,22 +4,37 @@ import fs from 'node:fs/promises';
 import vm from 'node:vm';
 const source=await fs.readFile(new URL('../extension/app.js',import.meta.url),'utf8');
 const helper=source.slice(source.indexOf('function supportsTypeExclusion('),source.indexOf('function applyPool('));
-
-test('feedback shows a brief confirmation while retaining undo',async()=>{
- const messages=[],requests=[],undo={hidden:true},learning={uniqueExamples:4,blockedTypes:[{key:'combo',label:'室友与同居 + 占有欲'}]};
- const context=vm.createContext({libraryView:'pool',lastFeedback:null,poolState:{preferences:{learning}},poolRequest:async(path,body)=>{requests.push({path,...body});return {effect:body.choice==='clear'?'已撤销此次类型排除':'已排除此类',learning:body.choice==='clear'?{uniqueExamples:3,blockedTypes:[]}:learning,pool:{}}},applyPool(){},refreshBatchResults:async()=>{},$:id=>id==='undoFeedback'?undo:null,message:value=>messages.push(value)});
- vm.runInContext(helper+source.slice(source.indexOf('async function feedbackBot('),source.indexOf("$('undoFeedback').onclick=")),context);
- await context.feedbackBot('role-1','less');
- assert.equal(requests[0].choice,'less');assert.equal(context.lastFeedback,'role-1');assert.equal(undo.hidden,false);assert.match(messages[0],/已排除此类/);assert.equal(messages[0],'已排除此类');
- await context.feedbackBot('role-1','clear');
- assert.equal(context.lastFeedback,null);assert.equal(undo.hidden,true);assert.equal(messages[1],'已撤销偏好');assert.ok(!messages[1].includes('已排除类型'));
+const handler=source.slice(source.indexOf('async function feedbackBot('),source.indexOf("$('undoFeedback').onclick="));
+function fixture(request){
+ const messages=[],requests=[],refreshes=[],undo={hidden:true},learning={blockedTypes:[]};
+ const context=vm.createContext({libraryView:'pool',lastFeedback:null,feedbackSubmitting:new Set(),poolState:{revision:1,preferences:{learning}},
+ poolRequest:async(path,body)=>{requests.push({path,...body});return request?request(path,body):{pool:{revision:2,preferences:{learning}}}},
+ applyPool(next){if(next.revision>=context.poolState.revision)context.poolState={...context.poolState,...next}},refreshBatchResults:async()=>{},
+ poolRefreshView:{request:value=>refreshes.push(value)},$:id=>id==='undoFeedback'?undo:null,actionNotice:value=>messages.push(value)});
+ vm.runInContext(helper+handler,context);return {context,messages,requests,refreshes,undo};
+}
+test('feedback immediately refreshes and gives a short visible confirmation with undo',async()=>{
+ const {context,messages,requests,refreshes,undo}=fixture();
+ await context.feedbackBot('role-1','less');assert.equal(requests[0].choice,'less');assert.equal(context.lastFeedback,'role-1');assert.equal(undo.hidden,false);assert.equal(messages.at(-1),'已排除此类');
+ assert.ok(refreshes.every(value=>value.immediate));
+ await context.feedbackBot('role-1','clear');assert.equal(context.lastFeedback,null);assert.equal(undo.hidden,true);assert.equal(messages.at(-1),'已撤销偏好');
 });
-
-test('old backend cannot receive a type-exclusion vote until the tool restarts',async()=>{
- const messages=[];let requests=0;
- const context=vm.createContext({poolState:{preferences:{learning:{uniqueExamples:3}}},poolRequest:async()=>{requests++;throw new Error('must not submit')},message:value=>messages.push(value)});
- vm.runInContext(helper+source.slice(source.indexOf('async function feedbackBot('),source.indexOf("$('undoFeedback').onclick=")),context);
- assert.equal(context.supportsTypeExclusion(),false);await context.feedbackBot('role-1','less');
- assert.equal(requests,0);assert.match(messages[0],/服务尚未更新，请重启工具后启用类型排除/);assert.match(messages[0],/没有提交/);
- context.poolState={preferences:{learning:{blockedTypes:[]}}};assert.equal(context.supportsTypeExclusion(),true);
+test('old backend cannot receive a type-exclusion vote until restart',async()=>{
+ const {context,messages,requests}=fixture();context.poolState={preferences:{learning:{uniqueExamples:3}}};
+ await context.feedbackBot('role-1','less');assert.equal(requests.length,0);assert.match(messages.at(-1),/未提交/);
+});
+test('repeated clicks share one pending request and the busy state clears',async()=>{
+ let resolve;const pending=new Promise(done=>resolve=done),{context,requests}=fixture(()=>pending);
+ const first=context.feedbackBot('role','less');await context.feedbackBot('role','less');
+ assert.equal(requests.length,1);assert.equal(context.feedbackSubmitting.has('role'),true);
+ resolve({pool:{revision:2}});await first;assert.equal(context.feedbackSubmitting.size,0);
+});
+test('failed feedback remains retryable and does not claim a successful exclusion',async()=>{
+ const {context,messages,requests}=fixture(()=>{throw new Error('offline')});
+ await context.feedbackBot('role','less');assert.equal(context.feedbackSubmitting.size,0);assert.equal(messages.at(-1),'保存失败：offline');
+ await context.feedbackBot('role','less');assert.equal(requests.length,2);assert.equal(context.lastFeedback,null);
+});
+test('a late older feedback response cannot overwrite the latest undo target',async()=>{
+ const {context}=fixture(()=>({pool:{revision:2,lastFeedback:{id:'old'}}}));context.poolState.revision=3;context.lastFeedback='new';
+ await context.feedbackBot('old','less');assert.equal(context.lastFeedback,'new');
 });
