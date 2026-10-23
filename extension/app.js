@@ -93,32 +93,13 @@ function coverFeedbackState(record){
  const digest=record.avatarAsset?.sha256,reference=!!record.coverPreference?.reference||!!(digest&&(poolState?.preferences?.cover?.references||[]).some(value=>value.sha256===digest)),enabled=supportsCoverFeedback(),approved=record.avatarAsset?.review==='approved',busy=coverSubmitting.has(record.id);
  return {choice:reference?'clear':'more',label:busy?'正在保存封面偏好…':reference?'撤销封面参考':'封面多来',disabled:!enabled||!approved||busy,title:!enabled?'服务尚未更新，封面偏好尚未生效；请重启工具后使用。':!approved?'请先检查并通过来源头像，再添加封面参考。':reference?'撤销此封面参考，不改变题材偏好和使用记录。':'以这张封面为参考，优先相近构图／穿着风格（不露点）；不改变题材偏好。'};
 }
-function coverPreferencesMessage(cover,maxNames=3){
- if(!cover?.enabled)return '封面偏好尚未生效，请重启工具后使用“封面多来”。';
- const names=[...new Set((cover.references||[]).map(reference=>String(reference.name||reference.label||'').trim()).filter(Boolean))];
- if(!names.length)return '封面参考：尚未添加，可点“封面多来”单独保存封面偏好。';
- const shown=names.slice(0,maxNames).join('、')+(names.length>maxNames?'等 '+names.length+' 个':'');
- return '封面参考：'+shown+'，优先相近构图／穿着风格（不露点）。';
-}
 function supportsTypeExclusion(){return Array.isArray(poolState?.preferences?.learning?.blockedTypes)}
-function blockedTypesMessage(learning,maxLength=180){
- const labels=[...new Set((learning?.blockedTypes||[]).map(type=>String(type.label||type.key||'').trim()).filter(Boolean))];
- if(!labels.length)return '';
- const types=labels.join('、'),shown=types.length>maxLength?types.slice(0,maxLength)+'…（共 '+labels.length+' 类，悬停查看全部）':types;
- return '已排除类型：'+shown+'。';
-}
 function applyPool(next,fromPoll=false){
  if(!fromPoll){poolRequests.invalidate();poolPolling=false;}
  if(poolState&&next.revision<poolState.revision)return;
  const changed=!poolState||next.revision!==poolState.revision||!!next.ready||!!next.history;
- poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);$('preferenceSummary').textContent=poolState.preferences?poolState.preferences.explanation+' 入库门槛：来源浏览 ≥80，消息 ≥100；已标多来的角色保留。未知热度如实标注。':'';
+ poolState={...poolState,...next};if(next.ready)poolState.ready=next.ready.map(newRecord);if(next.history)poolState.history=next.history.map(newRecord);if(next.portraitPending)poolState.portraitPending=next.portraitPending.map(newRecord);$('viewPending').textContent='补货候选 '+(poolState.portraitPendingCount||0);
  $('poolReady').textContent=poolState.readyCount;$('poolReserve').textContent=poolState.reserveCount;$('poolUsed').textContent=poolState.usedCount;
- if(poolState.visualMix?.targetPercent)$('preferenceSummary').textContent+=' 真人／写实目标 '+poolState.visualMix.targetPercent+'%（'+poolState.visualMix.targetCount+' / 50），当前 '+poolState.visualMix.realisticCount+' / '+poolState.readyCount+'，已核验写实候选 '+poolState.visualMix.realisticQueued+'；使用后优先补足，不自动换掉未使用角色。';
- if(poolState.preferences?.learning){const learned=poolState.preferences.learning,more=(learned.preferredFeatures||[]).slice(0,3).map(v=>v.label).join('、'),less=(learned.downrankedFeatures||[]).slice(0,3).map(v=>v.label).join('、');$('preferenceSummary').textContent+=' 已学习 '+learned.uniqueExamples+' 个独立样本。'+(more?'优先：'+more+'。':'')+(less?'减少：'+less+'。':'')+' '+blockedTypesMessage(learned)}
- $('preferenceSummary').textContent+=' '+coverPreferencesMessage(poolState.preferences?.cover);
- $('preferenceSummary').title=[blockedTypesMessage(poolState.preferences?.learning,Infinity),coverPreferencesMessage(poolState.preferences?.cover,Infinity)].filter(Boolean).join(' ');
- if(!supportsTypeExclusion())$('preferenceSummary').textContent+=' 服务尚未更新，请重启工具后启用类型排除。';
- if(poolState.sourceMix){const mix=poolState.sourceMix;$('preferenceSummary').textContent+=' 原站 NSFW 目标 '+mix.targetPercent+'%（'+mix.targetCount+' / '+poolState.target+'），当前 '+mix.nsfwCount+' / '+poolState.readyCount+'；NSFW 候选 '+mix.nsfwPending+'。'+(mix.targetMet?'已达到目标。':'尚未达到目标，优先补入通过核验的 NSFW，现有库存保留。')}
  lastFeedback=poolState.lastFeedback?.id||null;$('undoFeedback').hidden=!lastFeedback;
  $('poolStatus').textContent=poolState.status+(poolState.readyCount<50?'；剩余 '+(50-poolState.readyCount)+' 个正在补货':'')+(typeof poolState.matchingCount==='number'&&poolState.matchingCount<poolState.readyCount?'；门槛筛选显示 '+poolState.matchingCount+' / '+poolState.readyCount+' 个，库存保留':'');
  $('poolErrors').textContent=Object.entries(poolState.sourceErrors||{}).map(([source,detail])=>(API_SOURCES[source]?.label||source)+' 暂时不可用：'+detail.error).join('；');
@@ -140,7 +121,7 @@ async function refreshPool(force=false){
 }
 async function consumeBot(id){if(consuming.has(id))return;consuming.add(id);render();try{const result=await poolRequest('/api/pool/use',{id});applyPool(result.pool);message(result.alreadyUsed?'此 bot 已归档，没有重复消耗库存。':result.replacementId?'已归档使用记录，新 bot 已补位。':'已归档，正在从接口读取新 bot 补位。')}catch(e){message('标记失败：'+e.message)}finally{consuming.delete(id);render()}}
 async function setLibraryView(view){poolRequests.invalidate();poolPolling=false;libraryView=view;$('filter').value='all';$('search').value='';render();if(view==='batch')return refreshBatchResults();if(view!=='manual')await refreshPool(true)}
-async function feedbackBot(id,choice){if(choice==='less'&&!supportsTypeExclusion())return message('服务尚未更新，请重启工具后启用类型排除；此次没有提交“不要”。');try{const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);if(libraryView==='batch')await refreshBatchResults();lastFeedback=choice==='clear'?null:id;$('undoFeedback').hidden=!lastFeedback;message([result.effect,blockedTypesMessage(result.learning),'已学习 '+(result.learning?.uniqueExamples||0)+' 个独立样本；使用次数不变。'].filter(Boolean).join(' '))}catch(error){message(error.message)}}
+async function feedbackBot(id,choice){if(choice==='less'&&!supportsTypeExclusion())return message('服务尚未更新，请重启工具后启用类型排除；此次没有提交“不要”。');try{const result=await poolRequest('/api/pool/feedback',{id,choice});applyPool(result.pool);if(libraryView==='batch')await refreshBatchResults();lastFeedback=choice==='clear'?null:id;$('undoFeedback').hidden=!lastFeedback;message(choice==='clear'?'已撤销偏好':choice==='less'?'已排除此类':'已保存偏好')}catch(error){message(error.message)}}
 async function coverFeedbackBot(id,choice){
  if(!supportsCoverFeedback())return message('服务尚未更新，封面偏好尚未生效；请重启工具后使用。此次没有提交。');
  const record=displayedRecords().find(value=>value.id===id);if(!record||record.avatarAsset?.review!=='approved')return message('请先检查并通过来源头像，再添加封面参考。此次没有提交。');

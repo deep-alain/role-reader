@@ -45,13 +45,12 @@ test('an exact reference portrait hash enables undo even when the record has no 
  const unrelated=context.coverFeedbackState({...approved,avatarAsset:{...approved.avatarAsset,sha256:'another-avatar'}});assert.equal(unrelated.choice,'more');assert.equal(unrelated.label,'封面多来');
 });
 
-test('actual pool summary lists cover references and preserves all names in its hover text',()=>{
+test('pool refresh keeps feedback undo without recreating the removed explanation',()=>{
  const elements=new Map(),names=['Lindsey','Another reference','Third reference','Fourth reference'];
  const context=vm.createContext({poolState:null,poolPolling:false,poolRequests:{invalidate(){}},poolRefreshView:{request(){}},coverSubmitting:new Set(),newRecord:value=>value,lastFeedback:null,API_SOURCES:{},$:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)}});
  vm.runInContext(helpers+source.slice(source.indexOf('function applyPool('),source.indexOf('async function poolRequest(')),context);
  context.applyPool({revision:1,preferences:{explanation:'当前偏好',learning:{uniqueExamples:0,blockedTypes:[]},cover:{enabled:true,count:4,references:names.map((name,index)=>({name,sha256:String(index)}))}},ready:[],readyCount:50,reserveCount:5,usedCount:6,status:'已就绪',lastFeedback:{id:'story-vote'}});
- const summary=elements.get('preferenceSummary');assert.match(summary.textContent,/封面参考：Lindsey/);assert.match(summary.textContent,/优先相近构图／穿着风格（不露点）/);
- for(const name of names)assert.ok(summary.title.includes(name));assert.equal(context.lastFeedback,'story-vote');assert.equal(elements.get('undoFeedback').hidden,false);
+ assert.equal(elements.has('preferenceSummary'),false);assert.equal(context.lastFeedback,'story-vote');assert.equal(elements.get('undoFeedback').hidden,false);
 });
 
 test('cover match annotation names the reference without turning a cosine into a percentage',()=>{
