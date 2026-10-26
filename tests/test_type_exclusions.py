@@ -15,6 +15,31 @@ ROOMMATE = '室友与同居'
 
 
 class TypeExclusionTests(unittest.TestCase):
+    def test_theme_only_dislike_keeps_unrelated_roles_in_same_theme(self):
+        rejected, other = self.reviewed('clicked'), self.reviewed('other')
+        rejected['category'] = 'Adult, Female, Original, Goth'
+        self.taste.feedback(rejected, 'less')
+        self.assertEqual(self.taste.model()['blockedTypes'], [])
+        self.assertEqual(self.taste.evaluate(rejected)[0], 'reject')
+        self.assertEqual(self.taste.evaluate(other)[0], 'accept')
+
+    def test_restart_recovers_legacy_collateral_but_not_direct_dislikes_or_history(self):
+        clicked, collateral, used = [self.reviewed(key) for key in ('clicked', 'collateral', 'used')]
+        self.taste.feedback(clicked, 'less')
+        self.taste.state['feedback'][clicked['source']]['typeRule'] = {'version': 1, 'features': ['theme:' + GOTH]}
+        self.taste._model = None
+        self.taste._save()
+        self.pool.state['preferenceExclusionPolicy'] = 'old-broad-rules'
+        self.pool.state['retired'] = [{**r, 'retiredReason': '已按你的标注排除类型：' + GOTH} for r in (clicked, collateral, used)]
+        self.pool.state['history'] = [used]
+        self.pool._save()
+        self.pool.close()
+        self.pool = PoolStore(self.temp.name, FakeCatalogue(), target=5, reserve_target=2, taste=TasteProfile(self.temp.name))
+        self.assertIn(collateral['id'], self.live_ids())
+        self.assertNotIn(clicked['id'], self.live_ids())
+        self.assertNotIn(used['id'], self.live_ids())
+        self.assertEqual(self.pool.snapshot()['readyCount'], 1)
+        self.assertEqual(self.pool.snapshot()['usedCount'], 1)
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.taste = TasteProfile(self.temp.name)
@@ -28,7 +53,7 @@ class TypeExclusionTests(unittest.TestCase):
     def reviewed(self, key, themes=(GOTH,), style='detailed_illustration',
                  medium='illustration', source=None):
         record = role(key, style=style, medium=medium)
-        tags = ['Adult', 'Female', 'Original']
+        tags = ['Adult', 'Female', 'Original'] + (['Knight'] if themes else [])
         if GOTH in themes:
             tags.append('Goth')
         if ROOMMATE in themes:

@@ -42,6 +42,8 @@ class PoolStore:
   if self.taste:
    if self.taste.hydrate_feedback([r for group in ('ready','reserve','history','portraitPending','portraitDeferred','retired') for r in self.state.get(group,[])]):self.state['lastHeadCheck']=0
    self.apply_preferences()
+   if self.state.get('preferenceExclusionPolicy')!='specific-types-v2':
+    self.restore_preference_exclusions();self.state['preferenceExclusionPolicy']='specific-types-v2';self._save()
   self.dedupe_inventory()
   with self.lock:self._promote();self._save()
  def _save(self):
@@ -106,17 +108,7 @@ class PoolStore:
   with self.lock:
    old_queries=self.taste.model()['queries'][:]
    record=self.get_record(record_id,include_retired=True);self.taste.feedback(record,choice)
-   if choice in ('more','clear'):
-    keep=[]
-    for r in self.state['retired']:
-     if r.get('retiredReason','').startswith('已按你的标注排除'):
-      candidate=copy.deepcopy(r);candidate.pop('retiredReason',None);candidate.pop('retiredAt',None);candidate.pop('excludedTypes',None)
-      accepted,_,candidate=evaluate(candidate)
-      decision,_,candidate=self.taste.evaluate(candidate) if accepted else ('reject','',candidate)
-      if decision!='reject' and not self._duplicate(candidate)[0]:self.state.setdefault('portraitPending',[]).append(candidate)
-      else:keep.append(r)
-     else:keep.append(r)
-    self.state['retired']=keep
+   if choice in ('more','clear'):self.restore_preference_exclusions()
    self.apply_preferences()
    if old_queries!=self.taste.model()['queries']:self.state['lastHeadCheck']=0;self._save();self.wake.set()
    if choice=='less':
@@ -131,6 +123,31 @@ class PoolStore:
     effect='已记住并排除此类：'+' ＋ '.join(label(f) for f in rule.get('features',[]))+'；今后的读取、推荐和补货直接过滤，跨来源生效。' if rule.get('features') else '已排除本条及同图／相同人设；这条资料缺少可识别的具体类型，未扩大到通用人像或性别。'
    else:effect='已撤销本条及镜像的偏好和类型排除；不再被其他规则排除的角色回到候选，使用次数不变。' if choice=='clear' else '已提高本条及相似题材、画风的优先级，解除本样本的类型排除；其他独立排除继续有效。'
    return {'ok':True,'choice':choice,'learning':learned,'effect':effect}
+ def restore_preference_exclusions(self):
+  """Recover collateral exclusions, preserving direct dislikes and used history."""
+  if not self.taste:return 0
+  restored=0
+  with self.lock:
+   keep=[];used={r['source'] for r in self.state['history']}
+   candidates=sorted(self.state['retired'],key=lambda r:((r.get('avatarAsset') or {}).get('review')=='approved',bool(r.get('addedAt'))),reverse=True)
+   for r in candidates:
+    if restored>=self.target+self.reserve_target:
+     keep.append(r);continue
+    if not r.get('retiredReason','').startswith('已按你的标注排除') or r['source'] in used:
+     keep.append(r);continue
+    candidate=copy.deepcopy(r)
+    for key in ('retiredReason','retiredAt','excludedTypes'):candidate.pop(key,None)
+    accepted,_,candidate=evaluate(candidate)
+    decision,_,candidate=self.taste.evaluate(candidate) if accepted else ('reject','',candidate)
+    if decision!='reject' and not self._duplicate(candidate)[0]:
+     if decision=='accept' and len(self.state['ready'])+len(self.state['reserve'])<self.target+self.reserve_target:
+      candidate['addedAt']=candidate.get('addedAt') or now_iso()
+      (self.state['ready'] if len(self.state['ready'])<self.target else self.state['reserve']).append(normalize_record(candidate))
+     else:self.state.setdefault('portraitPending',[]).append(normalize_record(candidate))
+     restored+=1
+    else:keep.append(r)
+   self.state['retired']=keep;self._promote();self._save()
+  return restored
  def review_portrait(self,record_id,digest,style,medium=None,evidence=None):
   if not self.taste:raise ValueError('偏好服务未启用')
   with self.lock:

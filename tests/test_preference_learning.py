@@ -9,7 +9,7 @@ from taste_profile import TasteProfile
 
 def role(key,theme='哥特与冷感反差',style='detailed_illustration',medium='illustration',approved=True,views=500):
  # Definitions differ beyond the name, so independent examples stay independent.
- return {'id':key,'source':'https://example.org/'+key,'name':key,'age':'28','category':'Adult, Female, Original',
+ return {'id':key,'source':'https://example.org/'+key,'name':key,'age':'28','category':'Adult, Female, Original, Knight',
   'prompt':('A thoughtful independent adult with her own occupation and daily routine. '*5)+'Occupation reference '+hashlib.sha256(key.encode()).hexdigest(),
   'greet':'At the end of a long day, she greets you at the doorway and asks about your evening. '+key,
   'scenario':'At home.','intro':'An adult character.','gender':'Female','avatar':'https://example.org/'+key+'.png',
@@ -82,7 +82,7 @@ class FeedbackTests(unittest.TestCase):
   self.vote('photo1',style='photo',medium='photorealistic')
   self.vote('photo2',style='photo',medium='photorealistic')
   excluded=self.vote('romance','less',theme='恋人关系冲突')
-  self.assertNotIn('realistic girlfriend',self.taste.model()['queries'])
+  self.assertIn('realistic girlfriend',self.taste.model()['queries'])
   self.taste.feedback(excluded,'more')
   self.assertIn('realistic girlfriend',self.taste.model()['queries'])
  def test_query_exclusion_requires_the_entire_type_combination(self):

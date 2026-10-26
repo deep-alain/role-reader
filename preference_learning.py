@@ -32,7 +32,11 @@ def type_features(record,portrait=None):
  selected.extend('type:'+key for key,(_,pattern) in TYPE_TAGS.items() if re.search(pattern,meta,re.I))
  return sorted(set(selected))
 
-def type_rule(record,portrait=None):return {'version':1,'features':type_features(record,portrait)}
+def specific_rule_features(values):
+ # Story themes alone are ranking evidence, never a whole-catalogue veto.
+ return sorted(set(values)) if any(f.startswith(('type:','trait:','style:')) for f in values) else []
+
+def type_rule(record,portrait=None):return {'version':2,'features':specific_rule_features(type_features(record,portrait))}
 
 def blocked_types(record,portrait,model):
  values=set(type_features(record,portrait))
@@ -103,7 +107,7 @@ def build_model(feedback):
   learned+=1
   for feature in set(vote.get('features',[])):stats[feature][vote['choice']]+=1
   if vote['choice']=='less' and isinstance(vote.get('typeRule'),dict):
-   rule_features=sorted(set(f for f in vote['typeRule'].get('features',[]) if isinstance(f,str)))
+   rule_features=specific_rule_features([f for f in vote['typeRule'].get('features',[]) if isinstance(f,str)])
    if rule_features:
     key=hashlib.sha256('\n'.join(rule_features).encode()).hexdigest()[:16]
     rule=excluded.setdefault(key,{'key':key,'features':rule_features,'label':' ＋ '.join(label(f) for f in rule_features),'blockedBy':0})
